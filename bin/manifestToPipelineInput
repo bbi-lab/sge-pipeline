@@ -1,0 +1,49 @@
+#!/usr/bin/env python
+
+import argparse
+import pandas as pd
+import sys
+
+def main():
+    parser = argparse.ArgumentParser('Convert MANIFEST to pipeline input files')
+    parser.add_argument('-m', '--manifest', required=True, help='Path to MANIFEST file')
+    parser.add_argument('-o', '--output', required=True, help='Path to output file for use with pipeline')
+    parser.add_argument('-f', '--filter', default="", help="Only process sampels with MANIFEST date matching <filter>",
+                        required=False)
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Turn on verbose output")
+    args = parser.parse_args()
+    VERBOSE=args.verbose
+
+    df = pd.read_csv(args.manifest, header=None, sep="\t",
+                      names=['sample_id', 'orig_fastq', 'fastq', 'date'])
+    if VERBOSE:
+        print("INFO: read %d lines from %s" % (df.shape[0], args.manifest))
+    if args.filter:
+        df = df[df["date"] == args.filter]
+        if VERBOSE:
+            print("INFO: applied filter, leaving %d entries" % (df.shape[0]))
+    
+    samples = df["sample_id"].unique().tolist()
+    with open(args.output, "w") as outfile:
+        for s in samples:
+            parts = s.split("_")
+            gene = parts[0]
+            exon = parts[1]                       
+            r1 = ""
+            r2 = ""
+            fqs = df[df["sample_id"] == s]["fastq"].tolist()
+            for fq in fqs:
+                if fq.endswith(".r1.fastq.gz"): # read 1
+                    r1 = fq
+                elif fq.endswith(".r2.fastq.gz"): # read 2
+                    r2 = fq
+            if not r1 or not r2:
+                sys.stderr.write("ERROR: couldn't find read 1 or read 2 for %s\n" % s)
+                continue
+            outfile.write("%s\t%s\t%s\t%s\t%s\n" % (gene, exon, s, r1, r2))
+    
+
+
+if __name__ == '__main__':
+    main()

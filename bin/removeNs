@@ -1,0 +1,23 @@
+#!/usr/bin/env python
+
+import pysam
+import sys
+import gzip
+
+def main():
+    foundNs = 0
+    noNs = 0
+    with pysam.FastxFile(sys.argv[1]) as fin, gzip.open(sys.argv[2], "wt") as fout:
+        for entry in fin:
+            if entry.sequence.find("N") == -1:
+                fout.write(str(entry) + '\n')
+                noNs += 1
+            else:
+                foundNs += 1
+    sys.stderr.write("found %d reads without Ns\n" % noNs)
+    sys.stderr.write("found %d reads with Ns\n" % foundNs)
+    return
+
+
+if __name__ == '__main__':
+    main()

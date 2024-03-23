@@ -1,0 +1,368 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+from collections import defaultdict
+
+import pysam
+import numpy as np
+import pandas as pd
+
+
+VERBOSE=False
+chrom = ""
+startpos = 0
+endpos = 0
+
+edits_by_pos = {}
+skip_pos = {}
+required_edits = {}
+deletion_counts = defaultdict(int)
+
+WT_READ = 1
+MISSING_REQ_EDIT = 2
+TOO_MANY_SNVS = 3
+DEL_READ_WITH_ERRORS = 4
+USEFUL_SNV_READ = 5
+USEFUL_DEL_READ = 6
+BAD_CIGAR = 7
+NO_SNV_FOUND = 8
+
+
+def process_snv_read(readobj):
+    '''process a read to extract all SNVs, check for the presence of the 
+    expected edits, and update the per-variant counts for the identified SNV
+    '''
+    # gather all differences between the amplicon and the reference
+    apairs = readobj.get_aligned_pairs(with_seq=True)
+    local_edits = {}
+        
+    for (read_offset, ref_offset, ref_base) in apairs:
+        if startpos + ref_offset in skip_pos:
+            continue
+        if ref_base.islower(): # lowercase means a mismatch between ref and read
+            local_edits[startpos + ref_offset] = readobj.query_sequence[ref_offset]
+    if VERBOSE:
+        print("local edits:", local_edits)
+
+    if len(local_edits) == 0:  # no SNVs found
+        return WT_READ    
+
+    # now make sure the required edits are present
+    ok = True
+    for k in required_edits.keys():
+        if k in local_edits and local_edits[k] == required_edits[k]:
+            del local_edits[k]
+        else:
+            ok = False
+            # required edit is missing
+            if VERBOSE:
+                print("required edit %d missing" % k)
+            break
+    if not ok:
+        return MISSING_REQ_EDIT
+    
+    if len(local_edits) > 1:
+        if VERBOSE:
+            print("too many edits remaining")
+        return TOO_MANY_SNVS
+    
+    if len(local_edits) == 0:
+        return NO_SNV_FOUND
+    
+    # only one edit remaining, so add it to the df
+    for pos, base in local_edits.items():
+        edits_by_pos[pos][base] += 1
+    return USEFUL_SNV_READ
+
+
+def process_del_read(readobj):
+    '''process a read to identify a 3bp deletion, check for the presence of the 
+    expected edits, and update the counts table for the identified deletion
+    '''
+    apairs = readobj.get_aligned_pairs(with_seq=True)
+    # tuples are (read_pos, ref_pos, nucleotide)
+    # for deletions, read_pos will be None    
+    local_edits = {}
+    
+    in_deletion = False
+    delbases = []
+
+    for (read_offset, ref_offset, ref_base) in apairs:
+        if in_deletion is True and read_offset is not None:
+            # we are now past the deletion
+            in_deletion = False
+            
+        if startpos + ref_offset in skip_pos:
+            continue
+        if ref_base.islower(): # lowercase means a mismatch between ref and read
+            try:
+                local_edits[startpos + ref_offset] = readobj.query_sequence[read_offset]
+            except IndexError:
+                continue
+        if read_offset is None:
+            # there is a query deletion
+            in_deletion = True
+            delbases.append(startpos + ref_offset)
+            
+    # now make sure the required edits are present
+    ok = True
+    for k in required_edits.keys():
+        if k in local_edits and local_edits[k] == required_edits[k]:
+            del local_edits[k]
+        elif k in delbases:  # we aren't seeing k because it was part of the deletion
+            pass
+        else:
+            ok = False
+            # required edit is missing
+            if VERBOSE:
+                print("required edit %d missing" % k)
+            break
+    if not ok:
+        return MISSING_REQ_EDIT
+
+    if len(local_edits) > 0:
+        # if there are any mismatches left, then we have errors and we throw the read out
+        return DEL_READ_WITH_ERRORS
+
+    # we have a good deletion!
+    delstring = str(delbases[0]) + "-" + str(delbases[2])
+    deletion_counts[delstring] += 1
+    return USEFUL_DEL_READ
+
+
+def is_valid_del_cigar(cigarstats):
+    '''check to see if the cigar matches what we think a valid 
+    deletion-containing cigar should look like
+    
+    the argument is the object returned from record.get_cigar_stats()
+    '''
+    # is there a single deletion and does it have 3 positions deleted?
+    if cigarstats[1][2] == 1 and cigarstats[0][2] == 3:
+        # there is a single deletion and it has 3 pos deleted, good!
+        # now make sure there's no other crap
+        if cigarstats[1][1] == 0 and cigarstats[1][3] == 0 \
+            and cigarstats[1][4] == 0 and cigarstats[1][5] == 0:
+            return True
+    return False
+
+
+def processInputFile(inbam, cigar, maxreads=np.Inf,
+                     snvs_mode=False, dels_mode=False):
+    '''process a BAM file read by read, identifying SNV- or deletion-containing
+    reads, and extract statistics
+    '''
+    # dict to hold statistics to output later
+    readstats = {'total_reads': 0,
+                 'bad_cigar': 0,
+                 'wild_type': 0,
+                 'missing_req_edit': 0,
+                 'too_many_snvs': 0,
+                 'del_plus_errors': 0,
+                 'no_snv_edit': 0,
+                 'snv_reads': 0,
+                 'deletion_reads': 0,
+    }
+    
+    with pysam.AlignmentFile(inbam) as infile:
+        for record in infile:
+            if readstats['total_reads'] >= maxreads:
+                break
+            readstats['total_reads'] += 1
+
+            result = BAD_CIGAR
+            if snvs_mode:
+                if record.cigarstring == cigar:
+                    result = process_snv_read(record)
+
+            if dels_mode:
+                cigarstats = record.get_cigar_stats()
+                if is_valid_del_cigar(cigarstats):
+                    result = process_del_read(record)
+
+            if result == BAD_CIGAR:
+                readstats["bad_cigar"] += 1
+            elif result == WT_READ:
+                readstats["wild_type"] += 1
+            elif result == MISSING_REQ_EDIT:
+                readstats["missing_req_edit"] += 1
+            elif result == TOO_MANY_SNVS:
+                readstats["too_many_snvs"] += 1
+            elif result == DEL_READ_WITH_ERRORS:
+                readstats["del_plus_errors"] += 1
+            elif result == NO_SNV_FOUND:
+                readstats["no_snv_edit"] += 1
+            elif result == USEFUL_SNV_READ:
+                readstats["snv_reads"] += 1
+            elif result == USEFUL_DEL_READ:
+                readstats["deletion_reads"] += 1
+            else:
+                print("uh oh", result)
+
+    return readstats
+
+    
+def writeSNVOutputFile(outputfile, sampleid, targetname):
+    '''write the file with SNV counts
+    '''
+    chroms = []
+    poses = []
+    a_counts = []
+    c_counts = []
+    g_counts = []
+    t_counts = []
+    for pos, basedict in edits_by_pos.items():
+        chroms.append(chrom)
+        poses.append(pos)
+        a_counts.append(basedict['A'])
+        c_counts.append(basedict['C'])
+        g_counts.append(basedict['G'])
+        t_counts.append(basedict['T'])
+    sampleids = [sampleid] * len(poses)
+    targetnames = [targetname] * len(poses)
+    df = pd.DataFrame({'sampleid': sampleids,
+                       'target': targetnames,
+                       'chrom': chroms,
+                       'pos': poses,
+                       'n_A': a_counts,
+                       'n_C': c_counts,
+                       'n_G': g_counts,
+                       'n_T': t_counts,
+                   })
+    df.to_csv(outputfile, sep="\t", index=False)
+    return
+
+
+def writeDeletionOutputFile(outputfile, sampleid, targetname):
+    '''write the file with deletion counts
+    '''
+    header = "sampleid\ttarget\tchrom\tstart\tend\tcount\n"
+    with open(outputfile, "w") as outfh:
+        outfh.write(header)
+        for k, v in sorted(deletion_counts.items()):
+            outfh.write("%s\t%s\t%s\t%s\t%s\t%d\n" % (sampleid, targetname, 
+                                                      chrom, k.split("-")[0], 
+                                                      k.split("-")[1], v))
+    return
+
+
+def writeStatsFile(statsfile, readstats, sampleid, targetname):
+    with open(statsfile, 'w') as sfh:
+        sfh.write("sampleid\ttargetname\ttotal_reads\tbad_cigar\twild_type\tmissing_req_edit\t" +
+                  "too_many_snvs\tdel_plus_errors\tno_snv_edit\tsnv_reads\tdeletion_reads\n")
+        sfh.write(sampleid + "\t" +
+                  targetname + "\t" +
+                  str(readstats["total_reads"]) + "\t" + 
+                  str(readstats["bad_cigar"]) + "\t" +
+                  str(readstats["wild_type"]) + "\t" +
+                  str(readstats["missing_req_edit"]) + "\t" +
+                  str(readstats["too_many_snvs"]) + "\t" +
+                  str(readstats["del_plus_errors"]) + "\t" +
+                  str(readstats["no_snv_edit"]) + "\t" +
+                  str(readstats["snv_reads"]) + "\t" +
+                  str(readstats["deletion_reads"]) + "\n"
+        )
+
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser('extract matrix of edits for an SGE sample')
+    parser.add_argument('-n', '--targetname', required=True,
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=True, 
+                        help="File containing list of targets and expected edits")
+    parser.add_argument('-s', '--snvs', required=False, default="", 
+                        help="output SNV counts to <file>")
+    parser.add_argument('-d', '--dels', required=False, default="", 
+                        help="output deletion counts to <file>")
+    parser.add_argument('-l', '--sampleid', required=True, default="unlabeled",
+                        help="Sample identifer (replicate, timepoint)")
+    parser.add_argument('-o', '--outputfile', required=False, default="",
+                        help="Path to output fastq files (stdout)")
+    parser.add_argument('-S', '--statsfile', default='', required=True,
+                        help='Path to summary stats output file to append to')
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    parser.add_argument('-m', '--maxreads', type=int, default=0, 
+                        help='Maximum number of reads to processs')
+    parser.add_argument('inputbam',
+                        help="Path to input BAM file")
+    args = parser.parse_args()
+
+    global VERBOSE
+    if args.verbose is True:
+        VERBOSE=True
+
+    if not args.snvs and not args.dels: # gotta do at least one thing
+        sys.stderr.write("ERROR: Must activate either --snvs or --dels or both\n")
+        return -1
+    
+    snvs_mode=False
+    dels_mode=False
+    if args.snvs:
+        snvs_mode = True
+    if args.dels:
+        dels_mode = True
+
+    # read the list of targets and get the coordinates for our specific target
+    targetdf = pd.read_csv(args.targetfile, header=0, sep="\t", dtype={'skip_pos': 'string'})
+
+    global chrom
+    global startpos
+    global endpos
+
+    chrom = targetdf.loc[targetdf["exonname"] == args.targetname, "chrom"].values[0]
+    startpos = targetdf.loc[targetdf["exonname"] == args.targetname, "ampstart"].values[0]
+    endpos = targetdf.loc[targetdf["exonname"] == args.targetname, "ampstop"].values[0]
+    if VERBOSE:
+        sys.stderr.write("INFO: creating empty counts matrix with %d positions\n" % (endpos-startpos+1))
+
+    # parse the list of required edits    
+    global required_edits
+    editstring = targetdf.loc[targetdf["exonname"] == args.targetname, "required_edits"].values[0]
+    tedits = editstring.split(",")
+    for edit in tedits:
+        pos = int(edit[:-1])
+        base = edit[-1]
+        required_edits[pos] = base
+
+    # identify any positions that need to be skipped in the analysis (e.g., germline SNPs)
+    global skip_pos
+    skip_pos_list = targetdf.loc[targetdf["exonname"] == args.targetname, "skip_pos"].values[0]
+    if pd.isna(skip_pos_list) or not skip_pos_list:
+        pass
+    else:
+        skip_parts = skip_pos_list.split(",")
+        for p in skip_parts:
+            skip_pos[int(p)] = True
+
+    # identify the CIGAR string for a SNV-containing read
+    cigar = targetdf.loc[targetdf["exonname"] == args.targetname, "cigar"].values[0]
+    for x in range(startpos, endpos+1, 1):
+        edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
+        #edits_by_pos['wt'] = 0
+
+    if args.maxreads < 1:
+        maxreads = np.Inf
+    else:
+        maxreads = args.maxreads
+    
+    readstats = processInputFile(args.inputbam, cigar, maxreads, 
+                                 snvs_mode=snvs_mode, dels_mode=dels_mode)
+
+    if snvs_mode:
+        writeSNVOutputFile(args.snvs, args.sampleid, args.targetname)
+    if dels_mode:
+        writeDeletionOutputFile(args.dels, args.sampleid, args.targetname)
+    if args.statsfile:
+        writeStatsFile(args.statsfile, readstats, 
+                       args.sampleid, args.targetname)
+
+    return
+
+
+if __name__ == '__main__':
+    main()
+    
+

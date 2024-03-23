@@ -1,0 +1,114 @@
+#!/usr/bin/env python
+
+import argparse
+import os
+
+
+def main():
+    parser = argparse.ArgumentParser('Build scripts to run SGE pipeline')
+    parser.add_argument('--samplelist', required=True, help='Path to list of input fastq files')
+    #parser.add_argument('--targets', required=True, help='Path to list of HDR targets')
+    parser.add_argument('-o', '--outfile', required=True, help="Path to output file")
+    #parser.add_argument('-w', '--workdir', required=True, help="Path to pipeline working directory")
+    parser.add_argument('-c', '--concurrency', type=int, default=8, help="Number of concurrent jobs")
+
+    #parser.add_argument('-c', '--config', required=True, help='Path to config file')
+    parser.add_argument('--verbose', required=False, default=False,
+                        action="store_true", help="Turn on verbose output")
+
+    args = parser.parse_args()
+
+    nsamples = 0
+    with open(args.samplelist) as infile:
+        for line in infile:
+            nsamples += 1
+
+    if args.concurrency > 0:
+        concurrency = args.concurrency
+    else:
+        concurrency = 8
+
+    samplelist = args.samplelist
+    #targetfile = args.targets
+    #workdir = args.workdir
+    #if not os.path.isdir(workdir):
+    #    os.mkdir(workdir)
+    #fqdir = os.path.join(workdir, "fastq")
+    #if not os.path.isdir(fqdir):
+    #    os.mkdir(fqdir)
+    #bamdir = os.path.join(workdir, "bam")
+    #if not os.path.isdir(bamdir):
+    #    os.mkdir(bamdir)
+    #countsdir = os.path.join(workdir, "counts")
+    #if not os.path.isdir(countsdir):
+    #    os.mkdir(countsdir)
+    
+
+    with open(args.outfile, 'w') as outfile:
+        to_write = '''\
+#!/bin/zsh
+#$ -S /bin/zsh
+#$ -V
+#$ -P shendure_bbi
+#$ -N sge_pipe
+#$ -t 1-{nsamples}
+#$ -tc {concurrency}
+
+R1FILE=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 4)
+R2FILE=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 5)
+BASENAME=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 3)
+GENENAME=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 1)
+EXONNAME=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 2)
+
+ETCDIR=/net/bbi/vol1/data/sge-analysis/etc/${{GENENAME}}
+FQDIR=/net/bbi/vol1/data/sge-seq/nobackup/merged/${{GENENAME}}
+BAMDIR=/net/bbi/vol1/data/sge-analysis/nobackup/bam/${{GENENAME}}
+COUNTSDIR=/net/bbi/vol1/data/sge-analysis/nobackup/counts/${{GENENAME}}
+
+# for trimming and merging
+OUTMERGED=${{BASENAME}}.merged.fq.gz
+
+# for removing Ns
+FQ_NO_N_FILE=${{BASENAME}}.merged.noNs.fq.gz
+
+# for mapping
+FAFILE=${{ETCDIR}}/etc/${{EXONNAME}}.fa
+OUTBAM=${{BASENAME}}.bam
+
+source $HOME/.zshrc
+conda activate bbi
+
+# run seqprep to merge and trim adapters
+SeqPrep -f ${{R1FILE}} \\
+  -r ${{R2FILE}} \\
+  -1 /dev/null \\
+  -2 /dev/null \\
+  -s ${{FQDIR}}/${{OUTMERGED}} \\
+  -A GGTTTGGAGCGAGATTGATAAAGT -B CTGAGCTCTCTCACAGCCATTTAG \\
+  -M 0.1 -m 0.001 -q 20 -o 20
+                      
+# remove Ns
+removeNs ${{FQDIR}}/${{OUTMERGED}} ${{FQDIR}}/${{FQ_NO_N_FILE}}
+
+# mapping
+bwa mem ${{FAFILE}} ${{FQDIR}}/${{FQ_NO_N_FILE}} | samtools view -bS - \\
+    > ${{BAMDIR}}/${{OUTBAM}}
+
+# extract edits
+#editAccumulator \
+#  -n ${{EXONNAME}} \
+#  -t {targetfile} \
+#  -o ${{COUNTSDIR}}/${{BASENAME}}.counts.txt \
+#  -s ${{COUNTSDIR}}/${{BASENAME}}.stats.txt \
+#  ${{BAMDIR}}/${{OUTBAM}}
+    
+'''.format(concurrency=concurrency,
+           nsamples=nsamples,
+           targetfile="",
+           samplelist=samplelist)
+        outfile.write(to_write)
+    return
+    
+
+if __name__ == '__main__':
+    main()
