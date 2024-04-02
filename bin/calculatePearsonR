@@ -16,17 +16,21 @@ def main():
                         help="File containing list of targets and expected edits")
     parser.add_argument('-d', '--countsdir', required=True, default="",
                         help="Directory containing per-sample SNV counts files")
-    parser.add_argument("-o", "--outfile", required=False, 
+    parser.add_argument("-o", "--outfile", required=False, default=""
                         help="Output TSV file")
-    parser.add_argument('-v', '--verbose', required=False, default=False,
-                        action="store_true", help="Verbose output")
     args = parser.parse_args()
 
     # dictionary of day --> mean_correlatio
     meancorrs = sge_util.calcMeanPearsonR(args.targetfile, args.targetname, args.countsdir)
-    for day, meancorr in sorted(meancorrs.items()):
-        print("%s\t%0.3f" % (day, meancorr))
 
+    if args.outfile:
+        with open(args.outfile, "w") as outfh:
+            for day, meancorr in sorted(meancorrs.items()):
+                outfh.write("%s\t%0.3f\n" % (day, meancorr))
+    else:
+        for day, meancorr in sorted(meancorrs.items()):
+            print("%s\t%0.3f" % (day, meancorr))
+        
     return 0
 
 
