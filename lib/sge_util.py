@@ -161,3 +161,15 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
                     corrs.append(mycorr)
             mean_corrs[day] = np.mean(corrs)
     return mean_corrs
+
+
+
+def getVEPdf(vepfile):
+    '''reads the output of Variant Effect Predictor files, converts to 
+    pandas df, and returns it
+
+    '''
+    vepdf = pd.read_csv(vepfile, sep="\t", header=10)
+    vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
+    vepdf["pos"] = vepdf["pos"].astype(int)
+    return vepdf

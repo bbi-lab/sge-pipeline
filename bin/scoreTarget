@@ -1,0 +1,264 @@
+#!/usr/bin/env python
+
+import sys
+import os
+import argparse
+from collections import defaultdict
+import altair as alt
+import pandas as pd
+import numpy as np
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+
+import sge_util
+import sge_counts
+import sge_altair
+
+
+def countsToFreqs(pivotdf, statsdf, norm_col="snv_reads"):
+    # get list of days
+    days = statsdf["day"].unique()
+    for day in days:
+        repls = statsdf[statsdf["day"] == day]["repl"].unique()
+        for repl in repls:
+            idstring = repl + "_" + day
+            pivotdf["%s_%s_freq" % (repl, day)] = pivotdf["%s_%s" % (repl, day)] / \
+                statsdf.loc[(statsdf["repl"] == repl) &
+                            (statsdf["day"] == day), norm_col].values[0]
+    meltcols = []
+    for day in days:
+        if day == "D00":
+            continue
+        repls = statsdf[statsdf["day"] == day]["repl"].unique()
+        for repl in repls:
+            pivotdf["%s_%s_vs_lib_log2ratio" % (repl, day)] = \
+                np.log2(pivotdf["%s_%s_freq" % (repl, day)] / pivotdf["lib_D00_freq"])
+            meltcols.append("%s_%s_vs_lib_log2ratio" % (repl, day))
+    return pivotdf, meltcols
+
+
+def saveSNVScoreFigure(plotdf, args):
+    overallmax = np.nanmax(plotdf[np.isfinite(plotdf[["log2ratio_recentered", "log2ratio"]])][["log2ratio_recentered", "log2ratio"]])
+    overallmin = np.nanmin(plotdf[np.isfinite(plotdf[["log2ratio_recentered", "log2ratio"]])][["log2ratio_recentered", "log2ratio"]])
+
+    scorecol = alt.binding_select(
+        options=['log2ratio', 'log2ratio_recentered'],
+        name='Score type',
+        labels=['raw', 'recentered']
+    )
+    ycol_param = alt.param(
+        value='log2ratio',
+        bind=scorecol
+    )
+
+    day_dropdown = alt.binding_select(options=days, name='Day ', )
+    day_selection = alt.selection_point(fields=['day'], 
+                                    bind=day_dropdown, value=days[0])
+
+    repl_dropdown = alt.binding_select(options=repls + ["mean", "median"], name='Replicate ', )
+    repl_selection = alt.selection_point(fields=['repl'], 
+                                    bind=repl_dropdown, value="median")
+
+    selection = (repl_selection & day_selection)
+    brush = alt.selection_interval(encodings=['x'])
+    consequence_selection = alt.selection_point(fields=['Consequence'], bind='legend')
+
+    a = alt.Chart(plotdf, height=200, width=1200).mark_point(filled=True, size=50).encode(
+        x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
+    ),
+        y=alt.Y('y:Q', title="log2 ratio", scale=alt.Scale()),
+        color=alt.Color('Consequence:N', title="Variant type"),
+        opacity=alt.condition(consequence_selection, alt.value(1), alt.value(0.2)),
+        tooltip=['pos', 'mutant_allele', 'ref', 'posid','Consequence', 'log2ratio', 'log2ratio_recentered']
+    ).transform_filter(
+        selection
+    ).transform_calculate(
+        y=f'datum[{ycol_param.name}]'
+    ).add_params(
+        repl_selection, day_selection, consequence_selection, brush, ycol_param
+    ).interactive()
+
+    b = alt.Chart(plotdf, width=550, height=250
+            ).mark_bar(
+        opacity=0.9,
+        binSpacing=0
+    ).encode(
+        x=alt.X('y:Q', title="log2 ratio", 
+            axis=alt.Axis(labelFontSize=12, labelAngle=315)).bin(extent=[overallmin, overallmax], step=0.1),
+        y=alt.Y('count()', title="number of variants").stack("zero"),
+        color=alt.Color('Consequence:N', title="Variant type", scale=alt.Scale(scheme="category10"))
+    ).transform_filter(
+        selection
+    ).transform_filter(
+        brush
+    ).transform_calculate(
+        y=f'datum[{ycol_param.name}]'
+    ).add_params(
+        repl_selection, day_selection, ycol_param
+    )
+
+    c = alt.Chart(plotdf, width=550, height=250
+            ).mark_bar(
+        opacity=0.9,
+        binSpacing=0
+    ).encode(
+        x=alt.X('y:Q', title="log2 ratio", 
+            axis=alt.Axis(labelFontSize=12, labelAngle=315)).bin(extent=[overallmin, overallmax], step=0.1),
+        y=alt.Y('count()', title="Distribution within score bin").stack("normalize"),
+        color=alt.Color('Consequence:N', title="Variant type", scale=alt.Scale(scheme="category10"))
+    ).transform_filter(
+        selection
+    ).transform_filter(
+        brush
+    ).transform_calculate(
+        y=f'datum[{ycol_param.name}]'
+    ).add_params(
+        repl_selection, day_selection, ycol_param
+    )
+
+    scorechart = (a & (b | c)).properties(title="log2 ratio scores for %s" % exonname).configure_title(fontSize=20, 
+                    offset=5, 
+                    orient='top', 
+                    anchor='middle',
+    )
+    scorechart.save("viz/%s.scores.html" % exonname)
+    return
+
+
+
+
+def scoreSNVs(args):
+    # meta data about the target
+    chrom, startpos, endpos = sge_util.getTargetEditRegion(args.targetfile, args.targetname)
+    skip_pos = sge_util.getTargetSkipPositions(args.targetfile, args.targetname)
+    req_edits = sge_util.getTargetRequiredEdits(args.targetfile, args.targetname)
+
+    # get the reference genome sequence as a dataframe.
+    # we should probably have a way to load the hap1 germline SNPs here so that the reference
+    # sequence reflects the sequence of the cell line we're using
+    refdh = sge_util.getReferenceSequence(chrom, startpos, endpos)
+
+    # read SNV counts files
+    snvdf = pd.DataFrame()
+    snvfiles = sge_counts.getAllSNVCountFiles(args.targetname,
+                                              args.countsdir,
+                                              filterstring="NC_")
+    for snvfile in snvfiles:
+        tmpdf = sge_counts.getSNVCounts(snvfile, augment=True, pseudocount=0)
+        snvdf = pd.concat([snvdf, tmpdf])
+    snvdf = snvdf.reset_index(drop=True)
+
+    # read ReadStats files
+    statsdf = pd.DataFrame()
+    statsfiles = sge_counts.getAllReadStatsFiles(args.targetname,
+                                                 args.countsdir,
+                                                 filterstring="NC_")
+    for statsfile in statsfiles:
+        tmpdf = sge_counts.getReadStats(statsfile, augment=True)
+        statsdf = pd.concat([statsdf, tmpdf])
+    statsdf = statsdf.reset_index(drop=True)
+
+    # melt
+    meltdf = snvdf.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
+                     value_vars=["A", "C", "G", "T"],
+                     var_name="mutant_allele", value_name="count")
+    meltdf = meltdf[(meltdf["pos"] >= startpos) &
+                    (meltdf["pos"] <= endpos)]
+    # merge with reference sequence
+    meltdf = meltdf.merge(refdh, on="pos")
+    meltdf = meltdf[meltdf["ref"] != meltdf["mutant_allele"]]
+    meltdf["pos_id"] = meltdf["pos"].astype(str) + ":" + meltdf["mutant_allele"]
+
+    # pivot
+    pivotdf = meltdf.pivot(index=["chrom", "pos", "target", "mutant_allele", 
+                                  "ref", "pos_id"],
+                           columns=["repl", "day"],
+                           values=["count"]
+                          ).reset_index()
+    pivotdf.columns = pivotdf.columns.to_flat_index().map(
+        lambda x: '_'.join([a for a in x if (a != '' and a != "count")])
+        )
+
+    # annotate which positions need to be skipped
+    pivotdf["pam_edit_or_snp"] = False
+    pivotdf.loc[pivotdf["pos"].isin(req_edits), "pam_edit_or_snp"] = True
+    pivotdf.loc[pivotdf["pos"].isin(skip_pos), "pam_edit_or_snp"] = True
+
+    # convert counts to frequencies
+    pivotdf, meltcols = countsToFreqs(pivotdf, statsdf)
+
+    # annotate with vep preditions
+    vepdf = sge_util.getVEPdf(args.vepfile)
+    pivotdf = pivotdf.merge(vepdf[["pos", "Allele", "Consequence"]], 
+                            left_on=["pos", "mutant_allele"], 
+                            right_on=["pos", "Allele"])
+
+    # melt once for the "raw" log2 ratio scores
+    meltdf = pivotdf.melt(id_vars=["chrom", "pos", "target", "mutant_allele", "ref",
+                                   "pos_id", "pam_edit_or_snp", "Consequence"],
+                          value_vars=meltcols,
+                          var_name="replday",
+                          value_name="log2ratio"
+                         )
+    meltdf["repl"] = meltdf["replday"].str[:4]
+    meltdf["day"] = meltdf["replday"].str[5:8]
+    meltdf = meltdf.drop(columns=["replday",])
+
+    mediandf = meltdf.groupby(["chrom", "pos", "target", "mutant_allele", "ref", 
+                               "pos_id", "pam_edit_or_snp","Consequence", "day"]).agg(
+        log2ratio=pd.NamedAgg(column='log2ratio', aggfunc='median'),
+        #log2ratio_recentered=pd.NamedAgg(column='log2ratio_recentered', aggfunc='median')
+        ).reset_index()
+    mediandf["repl"] = "median"
+    scoredf = pd.concat([meltdf, mediandf])
+    return scoredf        
+
+
+
+def main():
+    parser = argparse.ArgumentParser('extract matrix of edits for an SGE sample')
+    parser.add_argument('-n', '--targetname', required=True,
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=True, 
+                        help="File containing list of targets and expected edits")
+    parser.add_argument('-s', '--snvtsv', required=False, default="", 
+                        help="Output TSV file of SNV scores")
+    parser.add_argument('-S', '--snvfig', required=False, default="", 
+                        help="Output figure of SNV scores")
+    parser.add_argument('-d', '--deltsv', required=False, default="", 
+                        help="Output TSV file of deletion scores")
+    parser.add_argument('-D', '--delfig', required=False, default="", 
+                        help="Output figure of deletion scores")
+
+    parser.add_argument('-o', '--outdir', default='./', required=True,
+                        help="Output directory for scores")
+    parser.add_argument('-c', '--countsdir', required=True, default="",
+                        help="Directory containing per-sample SNV counts files")
+    
+    parser.add_argument('-V', '--vepfile', required=True, default="",
+                        help="output from Variant Effect Predictor for this target")
+    
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.outdir):
+        os.mkdir(args.outdir, mode=0o755)
+    if not args.outdir.endswith("/"):
+        args.outdir = args.outdir + "/"
+    snv_figure_file = args.outdir + "%s.snv_library.png" % args.targetname
+    del_figure_file = args.outdir + "%s.del_library.png" % args.targetname
+
+    # meta data about the target
+    chrom, startpos, endpos = sge_util.getTargetEditRegion(args.targetfile, args.targetname)
+    refdh = sge_util.getReferenceSequence(chrom, startpos, endpos)
+    skip_pos = sge_util.getTargetSkipPositions(args.targetfile, args.targetname)
+    req_edits = sge_util.getTargetRequiredEdits(args.targetfile, args.targetname)
+
+    # SNV scoring
+    if args.snvtsv:
+        scoredf = scoreSNVs(args)
+        scoredf.to_csv("./test.scores.tsv", sep="\t", index=False)
+if __name__ == '__main__':
+    main()
+    
