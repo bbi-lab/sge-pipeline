@@ -16,7 +16,7 @@ def main():
                         help="File containing list of targets and expected edits")
     parser.add_argument('-d', '--countsdir', required=True, default="",
                         help="Directory containing per-sample SNV counts files")
-    parser.add_argument("-o", "--outfile", required=False, default=""
+    parser.add_argument("-o", "--outfile", required=False, default="",
                         help="Output TSV file")
     args = parser.parse_args()
 

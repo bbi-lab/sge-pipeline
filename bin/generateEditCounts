@@ -8,15 +8,10 @@ import pysam
 import numpy as np
 import pandas as pd
 
-
-VERBOSE=False
-chrom = ""
-startpos = 0
-endpos = 0
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_target
 
 edits_by_pos = {}
-skip_pos = {}
-required_edits = {}
 deletion_counts = defaultdict(int)
 
 WT_READ = 1
@@ -29,7 +24,7 @@ BAD_CIGAR = 7
 NO_SNV_FOUND = 8
 
 
-def process_snv_read(readobj):
+def process_snv_read(target, args, readobj):
     '''process a read to extract all SNVs, check for the presence of the 
     expected edits, and update the per-variant counts for the identified SNV
     '''
@@ -38,33 +33,33 @@ def process_snv_read(readobj):
     local_edits = {}
         
     for (read_offset, ref_offset, ref_base) in apairs:
-        if startpos + ref_offset in skip_pos:
+        if target.ampstartpos + ref_offset in target.skip_pos:
             continue
         if ref_base.islower(): # lowercase means a mismatch between ref and read
-            local_edits[startpos + ref_offset] = readobj.query_sequence[ref_offset]
-    if VERBOSE:
-        print("local edits:", local_edits)
+            local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[ref_offset]
+    if args.verbose:
+        print("INFO: local edits:", local_edits)
 
     if len(local_edits) == 0:  # no SNVs found
         return WT_READ    
 
     # now make sure the required edits are present
     ok = True
-    for k in required_edits.keys():
-        if k in local_edits and local_edits[k] == required_edits[k]:
+    for k in target.required_edits.keys():
+        if k in local_edits and local_edits[k] == target.required_edits[k]:
             del local_edits[k]
         else:
             ok = False
             # required edit is missing
-            if VERBOSE:
-                print("required edit %d missing" % k)
+            if args.verbose:
+                print("INFO: required edit at position %d missing" % k)
             break
     if not ok:
         return MISSING_REQ_EDIT
     
     if len(local_edits) > 1:
-        if VERBOSE:
-            print("too many edits remaining")
+        if args.verbose:
+            print("INFO: too many edits remaining")
         return TOO_MANY_SNVS
     
     if len(local_edits) == 0:
@@ -76,7 +71,7 @@ def process_snv_read(readobj):
     return USEFUL_SNV_READ
 
 
-def process_del_read(readobj):
+def process_del_read(target, args, readobj):
     '''process a read to identify a 3bp deletion, check for the presence of the 
     expected edits, and update the counts table for the identified deletion
     '''
@@ -93,30 +88,30 @@ def process_del_read(readobj):
             # we are now past the deletion
             in_deletion = False
             
-        if startpos + ref_offset in skip_pos:
+        if target.ampstartpos + ref_offset in target.skip_pos:
             continue
         if ref_base.islower(): # lowercase means a mismatch between ref and read
             try:
-                local_edits[startpos + ref_offset] = readobj.query_sequence[read_offset]
+                local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[read_offset]
             except IndexError:
                 continue
         if read_offset is None:
             # there is a query deletion
             in_deletion = True
-            delbases.append(startpos + ref_offset)
+            delbases.append(target.ampstartpos + ref_offset)
             
     # now make sure the required edits are present
     ok = True
-    for k in required_edits.keys():
-        if k in local_edits and local_edits[k] == required_edits[k]:
+    for k in target.required_edits.keys():
+        if k in local_edits and local_edits[k] == target.required_edits[k]:
             del local_edits[k]
         elif k in delbases:  # we aren't seeing k because it was part of the deletion
             pass
         else:
             ok = False
             # required edit is missing
-            if VERBOSE:
-                print("required edit %d missing" % k)
+            if args.verbose:
+                print("required edit at position %d missing" % k)
             break
     if not ok:
         return MISSING_REQ_EDIT
@@ -147,11 +142,17 @@ def is_valid_del_cigar(cigarstats):
     return False
 
 
-def processInputFile(inbam, cigar, maxreads=np.Inf,
+def processInputFile(target, args,
                      snvs_mode=False, dels_mode=False):
     '''process a BAM file read by read, identifying SNV- or deletion-containing
     reads, and extract statistics
+
     '''
+    if args.maxreads < 1:
+        maxreads = np.Inf
+    else:
+        maxreads = args.maxreads
+    
     # dict to hold statistics to output later
     readstats = {'total_reads': 0,
                  'bad_cigar': 0,
@@ -164,7 +165,7 @@ def processInputFile(inbam, cigar, maxreads=np.Inf,
                  'deletion_reads': 0,
     }
     
-    with pysam.AlignmentFile(inbam) as infile:
+    with pysam.AlignmentFile(args.inputbam) as infile:
         for record in infile:
             if readstats['total_reads'] >= maxreads:
                 break
@@ -172,13 +173,13 @@ def processInputFile(inbam, cigar, maxreads=np.Inf,
 
             result = BAD_CIGAR
             if snvs_mode:
-                if record.cigarstring == cigar:
-                    result = process_snv_read(record)
+                if record.cigarstring == target.cigar:
+                    result = process_snv_read(target, args, record)
 
             if dels_mode:
                 cigarstats = record.get_cigar_stats()
                 if is_valid_del_cigar(cigarstats):
-                    result = process_del_read(record)
+                    result = process_del_read(target, args, record)
 
             if result == BAD_CIGAR:
                 readstats["bad_cigar"] += 1
@@ -202,8 +203,9 @@ def processInputFile(inbam, cigar, maxreads=np.Inf,
     return readstats
 
     
-def writeSNVOutputFile(outputfile, sampleid, targetname):
+def writeSNVOutputFile(target, args):
     '''write the file with SNV counts
+
     '''
     chroms = []
     poses = []
@@ -212,14 +214,14 @@ def writeSNVOutputFile(outputfile, sampleid, targetname):
     g_counts = []
     t_counts = []
     for pos, basedict in edits_by_pos.items():
-        chroms.append(chrom)
+        chroms.append(target.chrom)
         poses.append(pos)
         a_counts.append(basedict['A'])
         c_counts.append(basedict['C'])
         g_counts.append(basedict['G'])
         t_counts.append(basedict['T'])
-    sampleids = [sampleid] * len(poses)
-    targetnames = [targetname] * len(poses)
+    sampleids = [args.sampleid] * len(poses)
+    targetnames = [target.targetname] * len(poses)
     df = pd.DataFrame({'sampleid': sampleids,
                        'target': targetnames,
                        'chrom': chroms,
@@ -229,29 +231,38 @@ def writeSNVOutputFile(outputfile, sampleid, targetname):
                        'n_G': g_counts,
                        'n_T': t_counts,
                    })
-    df.to_csv(outputfile, sep="\t", index=False)
+    df.to_csv(args.snvs, sep="\t", index=False)
     return
 
 
-def writeDeletionOutputFile(outputfile, sampleid, targetname):
+def writeDeletionOutputFile(target, args):
     '''write the file with deletion counts
+
     '''
     header = "sampleid\ttarget\tchrom\tstart\tend\tcount\n"
-    with open(outputfile, "w") as outfh:
+    with open(args.dels, "w") as outfh:
         outfh.write(header)
-        for k, v in sorted(deletion_counts.items()):
-            outfh.write("%s\t%s\t%s\t%s\t%s\t%d\n" % (sampleid, targetname, 
-                                                      chrom, k.split("-")[0], 
-                                                      k.split("-")[1], v))
+        for delstartpos in range(target.editstartpos, target.editendpos - 2, 1):
+            delendpos = delstartpos + 2
+            delstring = "%d-%d" % (delstartpos, delendpos)
+            if delstring in deletion_counts:
+                delcount = deletion_counts[delstring]
+            else:
+                delcount = 0
+            outfh.write("%s\t%s\t%s\t%s\t%s\t%d\n" % (args.sampleid, 
+                                                      target.targetname, 
+                                                      target.chrom, 
+                                                      delstartpos, delendpos,
+                                                      delcount))
     return
 
 
-def writeStatsFile(statsfile, readstats, sampleid, targetname):
-    with open(statsfile, 'w') as sfh:
+def writeStatsFile(target, args, readstats):
+    with open(args.statsfile, 'w') as sfh:
         sfh.write("sampleid\ttargetname\ttotal_reads\tbad_cigar\twild_type\tmissing_req_edit\t" +
                   "too_many_snvs\tdel_plus_errors\tno_snv_edit\tsnv_reads\tdeletion_reads\n")
-        sfh.write(sampleid + "\t" +
-                  targetname + "\t" +
+        sfh.write(args.sampleid + "\t" +
+                  target.targetname + "\t" +
                   str(readstats["total_reads"]) + "\t" + 
                   str(readstats["bad_cigar"]) + "\t" +
                   str(readstats["wild_type"]) + "\t" +
@@ -278,8 +289,6 @@ def main():
                         help="output deletion counts to <file>")
     parser.add_argument('-l', '--sampleid', required=True, default="unlabeled",
                         help="Sample identifer (replicate, timepoint)")
-    parser.add_argument('-o', '--outputfile', required=False, default="",
-                        help="Path to output fastq files (stdout)")
     parser.add_argument('-S', '--statsfile', default='', required=True,
                         help='Path to summary stats output file to append to')
     parser.add_argument('-v', '--verbose', required=False, default=False,
@@ -289,10 +298,6 @@ def main():
     parser.add_argument('inputbam',
                         help="Path to input BAM file")
     args = parser.parse_args()
-
-    global VERBOSE
-    if args.verbose is True:
-        VERBOSE=True
 
     if not args.snvs and not args.dels: # gotta do at least one thing
         sys.stderr.write("ERROR: Must activate either --snvs or --dels or both\n")
@@ -305,59 +310,25 @@ def main():
     if args.dels:
         dels_mode = True
 
-    # read the list of targets and get the coordinates for our specific target
-    targetdf = pd.read_csv(args.targetfile, header=0, sep="\t", dtype={'skip_pos': 'string'})
+    # create Target instance for the specific target name we
+    target = sge_target.Target(args.targetname, args.targetfile)
 
-    global chrom
-    global startpos
-    global endpos
+    if args.verbose:
+        print("INFO: creating empty counts matrix with %d positions" % (
+            target.ampendpos - target.startpos + 1))
 
-    chrom = targetdf.loc[targetdf["exonname"] == args.targetname, "chrom"].values[0]
-    startpos = targetdf.loc[targetdf["exonname"] == args.targetname, "ampstart"].values[0]
-    endpos = targetdf.loc[targetdf["exonname"] == args.targetname, "ampstop"].values[0]
-    if VERBOSE:
-        sys.stderr.write("INFO: creating empty counts matrix with %d positions\n" % (endpos-startpos+1))
-
-    # parse the list of required edits    
-    global required_edits
-    editstring = targetdf.loc[targetdf["exonname"] == args.targetname, "required_edits"].values[0]
-    tedits = editstring.split(",")
-    for edit in tedits:
-        pos = int(edit[:-1])
-        base = edit[-1]
-        required_edits[pos] = base
-
-    # identify any positions that need to be skipped in the analysis (e.g., germline SNPs)
-    global skip_pos
-    skip_pos_list = targetdf.loc[targetdf["exonname"] == args.targetname, "skip_pos"].values[0]
-    if pd.isna(skip_pos_list) or not skip_pos_list:
-        pass
-    else:
-        skip_parts = skip_pos_list.split(",")
-        for p in skip_parts:
-            skip_pos[int(p)] = True
-
-    # identify the CIGAR string for a SNV-containing read
-    cigar = targetdf.loc[targetdf["exonname"] == args.targetname, "cigar"].values[0]
-    for x in range(startpos, endpos+1, 1):
+    for x in range(target.ampstartpos, target.ampendpos + 1, 1):
         edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
-        #edits_by_pos['wt'] = 0
-
-    if args.maxreads < 1:
-        maxreads = np.Inf
-    else:
-        maxreads = args.maxreads
     
-    readstats = processInputFile(args.inputbam, cigar, maxreads, 
+    readstats = processInputFile(target, args,
                                  snvs_mode=snvs_mode, dels_mode=dels_mode)
 
     if snvs_mode:
-        writeSNVOutputFile(args.snvs, args.sampleid, args.targetname)
+        writeSNVOutputFile(target, args)
     if dels_mode:
-        writeDeletionOutputFile(args.dels, args.sampleid, args.targetname)
+        writeDeletionOutputFile(target, args)
     if args.statsfile:
-        writeStatsFile(args.statsfile, readstats, 
-                       args.sampleid, args.targetname)
+        writeStatsFile(target, args, readstats)
 
     return
 
