@@ -11,6 +11,58 @@ sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
 import sge_util
 import sge_counts
 import sge_altair
+import sge_target
+
+def saveSNVfigure(args, plotdf, figfile):
+    a = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=30).encode(
+        x=alt.X('pos_id:N', title="Variant" ,sort='y', axis=alt.Axis(labelFontSize=5)
+        ),
+        y=alt.Y('lib_D00:Q', title="Library count", scale=alt.Scale()),
+        color=alt.Color('mutant_allele:N', title="Variant allele", scale=alt.Scale(scheme="category10")),
+        stroke=alt.Stroke("pam_edit_or_snp:N", title="Site skipped", scale=alt.Scale(range=["", "black"]))
+        )
+    b = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=50).encode(
+    x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
+        ),
+        y=alt.Y('lib_D00:Q', title="library count", scale=alt.Scale()),
+        color=alt.Color('mutant_allele:N', title="Variant allele"),
+        stroke=alt.Stroke("pam_edit_or_snp:N", scale=alt.Scale(range=["", "black"]))
+        )
+    fullfigure = (a & b).properties(title="SNV Library uniformity for %s" % args.targetname
+                    ).configure_title(fontSize=20, 
+                    offset=5, 
+                    orient='top', 
+                    anchor='middle',
+        )
+
+    fullfigure.save(figfile, ppi=200)
+    return 
+
+
+def saveDelFigure(args, plotdf, figfile):
+    a = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=30).encode(
+        x=alt.X('pos_id:N', title="Variant" ,sort='y', axis=alt.Axis(labelFontSize=5)
+        ),
+        y=alt.Y('count:Q', title="Library count", scale=alt.Scale()),
+        color=alt.Color('pam_edit_or_snp:N', title="Site skipped", scale=alt.Scale(scheme="category10"))
+        )
+    
+    b = alt.Chart(plotdf, height=300, width=1000).mark_rule(size=3).encode(
+        x=alt.X('start:Q', title='Deletion coordinates').scale(zero=False),
+        x2='end:Q',
+        y=alt.Y('count:Q', title='Count in day 0 library').scale(zero=False),
+        color=alt.Color('pam_edit_or_snp:N', title="Site skipped", scale=alt.Scale(scheme="category10")
+        )).properties(title="3-bp deletion frequencies in BARD1 X1A v2 Day 0 library")
+    
+    fullfigure = (a & b).properties(title="Deletion library uniformity for %s" % args.targetname
+                    ).configure_title(fontSize=20, 
+                    offset=5, 
+                    orient='top', 
+                    anchor='middle',
+        )
+
+    fullfigure.save(figfile, ppi=200)
+    return
 
 
 def main():
@@ -38,65 +90,63 @@ def main():
     snv_figure_file = args.outdir + "%s.snv_library.png" % args.targetname
     del_figure_file = args.outdir + "%s.del_library.png" % args.targetname
 
-    # meta data about the target
-    chrom, startpos, endpos = sge_util.getTargetEditRegion(args.targetfile, args.targetname)
-    refdh = sge_util.getReferenceSequence(chrom, startpos, endpos)
-    skip_pos = sge_util.getTargetSkipPositions(args.targetfile, args.targetname)
-    req_edits = sge_util.getTargetRequiredEdits(args.targetfile, args.targetname)
+    target = sge_target.Target(args.targetname, args.targetfile)
 
-    # read the snv counts
-    df = sge_counts.getSNVCounts(args.snvs)
-    meltdf = df.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
-                     value_vars=["A", "C", "G", "T"],
-                     var_name="mutant_allele", value_name="count")
-    meltdf = meltdf[(meltdf["pos"] >= startpos) &
-                      (meltdf["pos"] <= endpos)]
-    
-    # merge with the reference sequence
-    meltdf = meltdf.merge(refdh, on="pos")
-    meltdf = meltdf[meltdf["ref"] != meltdf["mutant_allele"]]
-    meltdf["pos_id"] = meltdf["pos"].astype(str) + ":" + meltdf["mutant_allele"]
-    # pivot and annotate with metadata
-    pivotdf = meltdf.pivot(index=["chrom", "pos", "target", "mutant_allele", "ref", "pos_id"],
-                           columns=["repl", "day"],
-                           values=["count"]
-                          ).reset_index()
-    pivotdf.columns = pivotdf.columns.to_flat_index().map(
-        lambda x: '_'.join([a for a in x if (a!='' and a!="count")])
-        )
-    pivotdf["pam_edit_or_snp"] = False
-    pivotdf.loc[pivotdf["pos"].isin(req_edits), "pam_edit_or_snp"] = True
-    pivotdf.loc[pivotdf["pos"].isin(skip_pos), "pam_edit_or_snp"] = True
+    if args.snvs:
+        # read the snv counts
+        df = sge_counts.getSNVCounts(args.snvs)
+        meltdf = df.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
+                        value_vars=["A", "C", "G", "T"],
+                        var_name="mutant_allele", value_name="count")
+        meltdf = meltdf[(meltdf["pos"] >= target.editstartpos) &
+                        (meltdf["pos"] <= target.editendpos)]
+        
+        # merge with the reference sequence
+        meltdf = meltdf.merge(target.refdf, on="pos")
+        meltdf = meltdf[meltdf["ref"] != meltdf["mutant_allele"]]
+        meltdf["pos_id"] = meltdf["pos"].astype(str) + ":" + meltdf["mutant_allele"]
+        # pivot and annotate with metadata
+        pivotdf = meltdf.pivot(index=["chrom", "pos", "target", "mutant_allele", "ref", "pos_id"],
+                            columns=["repl", "day"],
+                            values=["count"]
+                            ).reset_index()
+        pivotdf.columns = pivotdf.columns.to_flat_index().map(
+            lambda x: '_'.join([a for a in x if (a != '' and a != "count")])
+            )
+        pivotdf["pam_edit_or_snp"] = False
+        pivotdf.loc[pivotdf["pos"].isin(target.required_edits), "pam_edit_or_snp"] = True
+        pivotdf.loc[pivotdf["pos"].isin(target.skip_pos), "pam_edit_or_snp"] = True
 
-    # make SNV plot
-    plotdf = pivotdf
-    a = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=30).encode(
-        x=alt.X('pos_id:N', title="Variant" ,sort='y', axis=alt.Axis(labelFontSize=5)
-        ),
-        y=alt.Y('lib_D00:Q', title="Library count", scale=alt.Scale()),
-        color=alt.Color('mutant_allele:N', title="Variant allele", scale=alt.Scale(scheme="category10")),
-        stroke=alt.Stroke("pam_edit_or_snp:N", title="Site skipped", scale=alt.Scale(range=["", "black"]))
-        )
-    b = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=50).encode(
-    x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
-        ),
-        y=alt.Y('lib_D00:Q', title="library count", scale=alt.Scale()),
-        color=alt.Color('mutant_allele:N', title="Variant allele"),
-        stroke=alt.Stroke("pam_edit_or_snp:N", scale=alt.Scale(range=["", "black"]))
-        )
-    fullfigure = (a & b).properties(title="SNV Library uniformity for %s" % args.targetname
-                    ).configure_title(fontSize=20, 
-                    offset=5, 
-                    orient='top', 
-                    anchor='middle',
-        )
+        # make SNV plot
+        saveSNVfigure(args, pivotdf, snv_figure_file)
+        print("INFO: saved SNV library figure to %s" % snv_figure_file)
+        n_missing = len(pivotdf[(pivotdf["pam_edit_or_snp"] == False) &
+                       (pivotdf["lib_D00"] == 0)])
+        print("Found %d missing SNVs in library" % n_missing)
+        if n_missing > 0:
+            print(pivotdf[(pivotdf["pam_edit_or_snp"] == False) &
+                          (pivotdf["lib_D00"] == 0)][["target", "chrom", "pos_id"]])
 
-    fullfigure.save(snv_figure_file, ppi=200)
-    n_missing = len(plotdf[(plotdf["pam_edit_or_snp"] == False) &
-                           (plotdf["lib_D00"] == 0)])
-    print("Found %d missing variants in library" % n_missing)
+    if args.dels:
+        df = sge_counts.getDelCounts(args.dels)
+        df["pos_id"] = df["start"].astype(str) + "-" + df["end"].astype(str)
+        df["middle"] = df["start"] + 1
+        df["pam_edit_or_snp"] = False
+        df.loc[df["start"].isin(target.required_edits), "pam_edit_or_snp"] = True
+        df.loc[df["middle"].isin(target.required_edits), "pam_edit_or_snp"] = True
+        df.loc[df["end"].isin(target.required_edits), "pam_edit_or_snp"] = True
+        
+        # make del plot
+        saveDelFigure(args, df, del_figure_file)
+        print("INFO: saved deletion library figure to %s" % del_figure_file)
+        n_missing = len(df[(df["pam_edit_or_snp"] == False) &
+                       (df["count"] == 0)])
+        print("Found %d missing deletions in library" % n_missing)
+        if n_missing > 0:
+            print(df[(df["pam_edit_or_snp"] == False) &
+                     (df["count"] == 0)][["target", "chrom", "start", "end"]])
+
     return 0
-
 
 if __name__ == '__main__':
     main()

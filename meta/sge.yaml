@@ -212,3 +212,4 @@ dependencies:
       - requests==2.31.0
       - seqspec==0.1.1
       - urllib3==2.2.1
+      - vl-convert-python==1.3.0
