@@ -7,24 +7,30 @@ import subprocess
 def main():
     parser = argparse.ArgumentParser('Create the mini reference fasta files for each target')
     parser.add_argument('-t', '--targets', required=True, help='Path to list of HDR targets')
-    parser.add_argument('-w', '--workdir', required=True, help='working directory ')
-
+    parser.add_argument('-o', '--outdir', required=True, help='output directory')
+    parser.add_argument('-r', '--ref', required=False, default="", help='path to full reference genome')
+    
     args = parser.parse_args()
+    refgenome = "/net/shendure/vol10/nobackup/genome/fasta/GRCh38.p13.genome.fa"
+    if args.ref:
+        refgenome = args.ref
+    outdir = args.outdir
+    if outdir.endswith("/"):
+        outdir = outdir[:-1]
 
     with open(args.targets) as infile:
-        infile.readline()
+        infile.readline()  # skip header line
         for line in infile:
             parts = line.strip().split("\t")
             chrom = parts[1]
             start = parts[4]
             stop = parts[5]
-            exonname = parts[0]
+            targetname = parts[0]
+
             regionstring = chrom + ":" + start + "-" + stop
-            outfile = args.workdir + "/" + exonname + ".fa"
-            print("samtools faidx %s %s > %s" % ("/net/shendure/vol10/nobackup/genome/fasta/GRCh38.p13.genome.fa",
-                                                 regionstring,
-                                                 outfile))
-            print("bwa index %s" % outfile)
+            outfile = args.outdir + "/" + targetname + ".fa"
+            subprocess.run(["samtools", "faidx", refgenome, regionstring, "-o", outfile])
+            subprocess.run(["bwa", "index", outfile])
     
     return
 
