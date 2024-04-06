@@ -226,7 +226,7 @@ def writeSNVOutputFile(target, args):
                        'chrom': chroms,
                        'pos': poses,
                        'allele': alleles,
-                       'counts': counts
+                       'count': counts
                    })
     df.to_csv(args.snvs, sep="\t", index=False)
     return

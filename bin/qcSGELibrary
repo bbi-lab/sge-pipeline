@@ -95,37 +95,25 @@ def main():
     if args.snvs:
         # read the snv counts
         df = sge_counts.getSNVCounts(args.snvs)
-        meltdf = df.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
-                        value_vars=["A", "C", "G", "T"],
-                        var_name="mutant_allele", value_name="count")
-        meltdf = meltdf[(meltdf["pos"] >= target.editstartpos) &
-                        (meltdf["pos"] <= target.editendpos)]
-        
+ 
         # merge with the reference sequence
-        meltdf = meltdf.merge(target.refdf, on="pos")
-        meltdf = meltdf[meltdf["ref"] != meltdf["mutant_allele"]]
-        meltdf["pos_id"] = meltdf["pos"].astype(str) + ":" + meltdf["mutant_allele"]
+        df = df.merge(target.refdf, on="pos")
+        df = df[df["ref"] != df["allele"]]
+        df["pos_id"] = df["pos"].astype(str) + ":" + df["allele"]
         # pivot and annotate with metadata
-        pivotdf = meltdf.pivot(index=["chrom", "pos", "target", "mutant_allele", "ref", "pos_id"],
-                            columns=["repl", "day"],
-                            values=["count"]
-                            ).reset_index()
-        pivotdf.columns = pivotdf.columns.to_flat_index().map(
-            lambda x: '_'.join([a for a in x if (a != '' and a != "count")])
-            )
-        pivotdf["pam_edit_or_snp"] = False
-        pivotdf.loc[pivotdf["pos"].isin(target.required_edits), "pam_edit_or_snp"] = True
-        pivotdf.loc[pivotdf["pos"].isin(target.skip_pos), "pam_edit_or_snp"] = True
+        df["pam_edit_or_snp"] = False
+        df.loc[df["pos"].isin(target.required_edits), "pam_edit_or_snp"] = True
+        df.loc[df["pos"].isin(target.skip_pos), "pam_edit_or_snp"] = True
 
         # make SNV plot
-        saveSNVfigure(args, pivotdf, snv_figure_file)
+        saveSNVfigure(args, df, snv_figure_file)
         print("INFO: saved SNV library figure to %s" % snv_figure_file)
-        n_missing = len(pivotdf[(pivotdf["pam_edit_or_snp"] == False) &
-                       (pivotdf["lib_D00"] == 0)])
+        n_missing = len(df[(df["pam_edit_or_snp"] == False) &
+                       (df["count"] == 0)])
         print("Found %d missing SNVs in library" % n_missing)
         if n_missing > 0:
-            print(pivotdf[(pivotdf["pam_edit_or_snp"] == False) &
-                          (pivotdf["lib_D00"] == 0)][["target", "chrom", "pos_id"]])
+            print(df[(df["pam_edit_or_snp"] == False) &
+                     (df["count"] == 0)][["target", "chrom", "pos_id"]])
 
     if args.dels:
         df = sge_counts.getDelCounts(args.dels)
