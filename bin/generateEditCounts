@@ -67,6 +67,8 @@ def process_snv_read(target, args, readobj):
     
     # only one edit remaining, so add it to the df
     for pos, base in local_edits.items():
+        if pos not in edits_by_pos:
+            break
         edits_by_pos[pos][base] += 1
     return USEFUL_SNV_READ
 
@@ -209,27 +211,22 @@ def writeSNVOutputFile(target, args):
     '''
     chroms = []
     poses = []
-    a_counts = []
-    c_counts = []
-    g_counts = []
-    t_counts = []
+    alleles = []
+    counts = []
     for pos, basedict in edits_by_pos.items():
-        chroms.append(target.chrom)
-        poses.append(pos)
-        a_counts.append(basedict['A'])
-        c_counts.append(basedict['C'])
-        g_counts.append(basedict['G'])
-        t_counts.append(basedict['T'])
+        for base, count in basedict.items():
+            chroms.append(target.chrom)
+            poses.append(pos)
+            alleles.append(base)
+            counts.append(count)
     sampleids = [args.sampleid] * len(poses)
     targetnames = [target.targetname] * len(poses)
     df = pd.DataFrame({'sampleid': sampleids,
                        'target': targetnames,
                        'chrom': chroms,
                        'pos': poses,
-                       'n_A': a_counts,
-                       'n_C': c_counts,
-                       'n_G': g_counts,
-                       'n_T': t_counts,
+                       'allele': alleles,
+                       'counts': counts
                    })
     df.to_csv(args.snvs, sep="\t", index=False)
     return
@@ -317,7 +314,7 @@ def main():
         print("INFO: creating empty counts matrix with %d positions" % (
             target.ampendpos - target.startpos + 1))
 
-    for x in range(target.ampstartpos, target.ampendpos + 1, 1):
+    for x in range(target.editstartpos, target.editendpos + 1, 1):
         edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
     
     readstats = processInputFile(target, args,
