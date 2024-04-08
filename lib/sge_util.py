@@ -61,7 +61,8 @@ def getVEPdf(vepfile):
     pandas df, and returns it
 
     '''
-    vepdf = pd.read_csv(vepfile, sep="\t", header=10)
+    vepdf = pd.read_csv(vepfile, sep="\t", skiprows=41)
+    vepdf = vepdf.rename(columns={'Allele': 'allele'})
     vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
     vepdf["pos"] = vepdf["pos"].astype(int)
     return vepdf
