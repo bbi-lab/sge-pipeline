@@ -84,12 +84,9 @@ def getSNVCounts(filename, augment=True, pseudocount=0):
         df["gene"] = gene
         df["repl"] = repl
         df["day"] = day
-    df = df.rename(columns={'n_A': 'A', 
-                            'n_C': 'C',
-                            'n_G': 'G', 
-                            'n_T': 'T'})
+    
     if pseudocount > 0:
-        df[["A", "C", "G", "T"]] = df[["A", "C", "G", "T"]].replace(0, pseudocount)
+        df["count"] = df["count"].replace(0, pseudocount)
     df = df.reset_index(drop=True)
     return df
 

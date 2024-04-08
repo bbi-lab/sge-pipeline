@@ -9,32 +9,10 @@ import pandas as pd
 import numpy as np
 
 sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
-
 import sge_util
 import sge_counts
 import sge_altair
-
-
-def countsToFreqs(pivotdf, statsdf, norm_col="snv_reads"):
-    # get list of days
-    days = statsdf["day"].unique()
-    for day in days:
-        repls = statsdf[statsdf["day"] == day]["repl"].unique()
-        for repl in repls:
-            idstring = repl + "_" + day
-            pivotdf["%s_%s_freq" % (repl, day)] = pivotdf["%s_%s" % (repl, day)] / \
-                statsdf.loc[(statsdf["repl"] == repl) &
-                            (statsdf["day"] == day), norm_col].values[0]
-    meltcols = []
-    for day in days:
-        if day == "D00":
-            continue
-        repls = statsdf[statsdf["day"] == day]["repl"].unique()
-        for repl in repls:
-            pivotdf["%s_%s_vs_lib_log2ratio" % (repl, day)] = \
-                np.log2(pivotdf["%s_%s_freq" % (repl, day)] / pivotdf["lib_D00_freq"])
-            meltcols.append("%s_%s_vs_lib_log2ratio" % (repl, day))
-    return pivotdf, meltcols
+import sge_target
 
 
 def saveSNVScoreFigure(plotdf, args):
@@ -125,28 +103,25 @@ def saveSNVScoreFigure(plotdf, args):
     return
 
 
-
-
-def scoreSNVs(args):
-    # meta data about the target
+def scoreDels(args, scoreall=True):
+    '''compute scores for the 3bp programmed deletions
+    
+    '''
     chrom, startpos, endpos = sge_util.getTargetEditRegion(args.targetfile, args.targetname)
     skip_pos = sge_util.getTargetSkipPositions(args.targetfile, args.targetname)
     req_edits = sge_util.getTargetRequiredEdits(args.targetfile, args.targetname)
 
-    # get the reference genome sequence as a dataframe.
-    # we should probably have a way to load the hap1 germline SNPs here so that the reference
-    # sequence reflects the sequence of the cell line we're using
-    refdh = sge_util.getReferenceSequence(chrom, startpos, endpos)
-
-    # read SNV counts files
-    snvdf = pd.DataFrame()
-    snvfiles = sge_counts.getAllSNVCountFiles(args.targetname,
+    # read deletion counts files
+    deldf = pd.DataFrame()
+    delfiles = sge_counts.getAllDelCountFiles(args.targetname,
                                               args.countsdir,
                                               filterstring="NC_")
-    for snvfile in snvfiles:
-        tmpdf = sge_counts.getSNVCounts(snvfile, augment=True, pseudocount=0)
-        snvdf = pd.concat([snvdf, tmpdf])
-    snvdf = snvdf.reset_index(drop=True)
+    for delfile in delfiles:
+        tmpdf = sge_counts.getDelCounts(delfile, augment=True)
+        if scoreall:
+            tmpdf = addMissingDels(tmpdf, chrom, startpos, endpos)
+        deldf = pd.concat([deldf, tmpdf])
+    deldf = deldf.reset_index(drop=True)
 
     # read ReadStats files
     statsdf = pd.DataFrame()
@@ -158,61 +133,116 @@ def scoreSNVs(args):
         statsdf = pd.concat([statsdf, tmpdf])
     statsdf = statsdf.reset_index(drop=True)
 
-    # melt
-    meltdf = snvdf.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
-                     value_vars=["A", "C", "G", "T"],
-                     var_name="mutant_allele", value_name="count")
-    meltdf = meltdf[(meltdf["pos"] >= startpos) &
-                    (meltdf["pos"] <= endpos)]
-    # merge with reference sequence
-    meltdf = meltdf.merge(refdh, on="pos")
-    meltdf = meltdf[meltdf["ref"] != meltdf["mutant_allele"]]
-    meltdf["pos_id"] = meltdf["pos"].astype(str) + ":" + meltdf["mutant_allele"]
 
-    # pivot
-    pivotdf = meltdf.pivot(index=["chrom", "pos", "target", "mutant_allele", 
-                                  "ref", "pos_id"],
-                           columns=["repl", "day"],
-                           values=["count"]
-                          ).reset_index()
-    pivotdf.columns = pivotdf.columns.to_flat_index().map(
-        lambda x: '_'.join([a for a in x if (a != '' and a != "count")])
-        )
 
-    # annotate which positions need to be skipped
-    pivotdf["pam_edit_or_snp"] = False
-    pivotdf.loc[pivotdf["pos"].isin(req_edits), "pam_edit_or_snp"] = True
-    pivotdf.loc[pivotdf["pos"].isin(skip_pos), "pam_edit_or_snp"] = True
 
-    # convert counts to frequencies
-    pivotdf, meltcols = countsToFreqs(pivotdf, statsdf)
+
+def scoreSNVs(target, args):
+    '''compute scores for SNVs
+    
+    '''
+    # load the day 0 library
+    snvfiles = target.getSampleList(args.countsdir,
+                                    include_neg=False)
+    libfile = snvfiles['D00'][0]
+    df = sge_counts.getSNVCounts(libfile,
+                                 augment=True,
+                                 pseudocount=args.pseudocount)
+    df = df.rename(columns={'count': 'snvlib_count'}
+        ).drop(columns=["sampleid", "repl", "day"])
+    statsfile = libfile.replace(".snvs.tsv", ".readstats.tsv")
+    statsdf = sge_counts.getReadStats(statsfile, augment=False)
+    normval = statsdf[args.normcol][0]
+    df['snvlib_freq'] = df['snvlib_count'] / normval
+        
+    if args.verbose:
+        print("INFO: Loaded data from SNV Day 0 library")
+
+    # load the various timepoints and replicates
+    nsamples = 1
+    allrepls = {}
+
+    for snvday, snvfilelist in sorted(snvfiles.items()):
+        if snvday == "D00": continue  # already loaded
+        allrepls[snvday] = []
+        for snvfile in sorted(snvfilelist):
+            # exclude neg
+            if "_NC_" in snvfile:
+                continue
+            nsamples += 1
+            if args.verbose:
+                print("INFO: loading data from %s" % snvfile)
+            tmpdf = sge_counts.getSNVCounts(snvfile,
+                                            augment=False,
+                                            pseudocount=args.pseudocount)
+            statsfile = snvfile.replace(".snvs.tsv", ".readstats.tsv")
+            statsdf = sge_counts.getReadStats(statsfile, augment=False)
+            sampleid = tmpdf["sampleid"][0]
+            parts = sampleid.split("_")
+            repl = parts[2]
+            allrepls[snvday].append(repl)
+            countcol = "%s_%s" % (snvday, repl)
+            tmpdf = tmpdf.rename(columns={'count': countcol})
+            freqcol = countcol + "_freq"
+            normval = statsdf[args.normcol][0]
+            tmpdf[freqcol] = tmpdf[countcol] / normval
+            df = df.merge(tmpdf[["chrom", "pos", "allele", countcol, freqcol]], on=["chrom", "pos", "allele"])
+    if args.verbose:
+        print("INFO: Finished loading data from %d samples" % nsamples)
+        print("INFO: Found data from timepoints: ", list(allrepls.keys()))
+
+    df = df[(df["pos"] >= target.editstartpos) &
+            (df["pos"] <= target.editendpos)]
+    # merge with the reference sequence
+    df = df.merge(target.refdf, on="pos")
+    df = df[df["ref"] != df["allele"]]
+    df["pos_id"] = df["pos"].astype(str) + ":" + df["allele"]
+    # pivot and annotate with metadata
+    df["pam_edit_or_snp"] = False
+    df.loc[df["pos"].isin(target.required_edits), "pam_edit_or_snp"] = True
+    df.loc[df["pos"].isin(target.skip_pos), "pam_edit_or_snp"] = True
 
     # annotate with vep preditions
     vepdf = sge_util.getVEPdf(args.vepfile)
-    pivotdf = pivotdf.merge(vepdf[["pos", "Allele", "Consequence"]], 
-                            left_on=["pos", "mutant_allele"], 
-                            right_on=["pos", "Allele"])
+    df = df.merge(vepdf[["pos", "allele", "Consequence"]], 
+                  on=["pos", "allele"]) 
 
-    # melt once for the "raw" log2 ratio scores
-    meltdf = pivotdf.melt(id_vars=["chrom", "pos", "target", "mutant_allele", "ref",
-                                   "pos_id", "pam_edit_or_snp", "Consequence"],
-                          value_vars=meltcols,
-                          var_name="replday",
-                          value_name="log2ratio"
-                         )
-    meltdf["repl"] = meltdf["replday"].str[:4]
-    meltdf["day"] = meltdf["replday"].str[5:8]
-    meltdf = meltdf.drop(columns=["replday",])
 
-    mediandf = meltdf.groupby(["chrom", "pos", "target", "mutant_allele", "ref", 
-                               "pos_id", "pam_edit_or_snp","Consequence", "day"]).agg(
-        log2ratio=pd.NamedAgg(column='log2ratio', aggfunc='median'),
-        #log2ratio_recentered=pd.NamedAgg(column='log2ratio_recentered', aggfunc='median')
-        ).reset_index()
-    mediandf["repl"] = "median"
-    scoredf = pd.concat([meltdf, mediandf])
-    return scoredf        
 
+    # now we have counts, frequencies, and annotations for each position and each sample.
+    # next step is to convert them into scores
+    for day, repls in sorted(allrepls.items()):
+        for repl in repls:
+            freqcol = "%s_%s_freq" % (day, repl)
+            ratiocol = "%s_%s_over_lib" % (day, repl)
+            df[ratiocol] = df[freqcol] / df['snvlib_freq']
+
+    # we also need day 13 (or day 11) vs day 5, per replicate
+    days = sorted(allrepls.keys())
+    earlyday = days[0]
+    lateday = days[1]
+    for repl in allrepls[earlyday]:
+        if repl in allrepls[lateday]:
+            df["%s_%s_over_%s_%s" % (lateday, repl, earlyday, repl)] = \
+                df["%s_%s_freq" % (lateday, repl)] / df["%s_%s_freq" % (earlyday, repl)]
+
+
+    for day, repls in sorted(allrepls.items()):
+        replcols = []
+        for repl in repls:
+            replcols.append("%s_%s_over_lib" % (day, repl))
+        df["%s_over_lib_median" % day] = df[replcols].median(axis=1)
+        df["%s_log2_median" % day] = np.log2(df["%s_over_lib_median" % day])
+
+    return df
+
+
+def saveSNVscores(args, scoredf):
+    outfile = args.snvtsv
+    scoredf.to_csv(outfile, index=False, sep="\t")
+    if args.verbose:
+        print("INFO: wrote SNV scores to %s" % outfile)
+    return
 
 
 def main():
@@ -229,36 +259,28 @@ def main():
                         help="Output TSV file of deletion scores")
     parser.add_argument('-D', '--delfig', required=False, default="", 
                         help="Output figure of deletion scores")
-
-    parser.add_argument('-o', '--outdir', default='./', required=True,
-                        help="Output directory for scores")
     parser.add_argument('-c', '--countsdir', required=True, default="",
                         help="Directory containing per-sample SNV counts files")
-    
     parser.add_argument('-V', '--vepfile', required=True, default="",
                         help="output from Variant Effect Predictor for this target")
+    parser.add_argument('-p', '--pseudocount', type=int, default=1, required=False,
+                        help="add <pseudocount> to any zero-count position")
+    parser.add_argument('-N', '--normcol', required=False, default="snv_reads",
+                        help="Name of column in readstats file to use for normalization")
     
     parser.add_argument('-v', '--verbose', required=False, default=False,
                         action="store_true", help="Verbose output")
     args = parser.parse_args()
 
-    if not os.path.exists(args.outdir):
-        os.mkdir(args.outdir, mode=0o755)
-    if not args.outdir.endswith("/"):
-        args.outdir = args.outdir + "/"
-    snv_figure_file = args.outdir + "%s.snv_library.png" % args.targetname
-    del_figure_file = args.outdir + "%s.del_library.png" % args.targetname
-
-    # meta data about the target
-    chrom, startpos, endpos = sge_util.getTargetEditRegion(args.targetfile, args.targetname)
-    refdh = sge_util.getReferenceSequence(chrom, startpos, endpos)
-    skip_pos = sge_util.getTargetSkipPositions(args.targetfile, args.targetname)
-    req_edits = sge_util.getTargetRequiredEdits(args.targetfile, args.targetname)
+    target = sge_target.Target(args.targetname, args.targetfile)
 
     # SNV scoring
     if args.snvtsv:
-        scoredf = scoreSNVs(args)
-        scoredf.to_csv("./test.scores.tsv", sep="\t", index=False)
+        scoredf = scoreSNVs(target, args)
+        saveSNVscores(args, scoredf)
+    return 0
+
+
 if __name__ == '__main__':
     main()
     
