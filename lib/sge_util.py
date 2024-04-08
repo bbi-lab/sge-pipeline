@@ -12,18 +12,16 @@ def calcPairwisePearsonR(target, snvfile1, snvfile2):
     '''calculates the pairwise Pearson r between two named sample ids
     
     '''
-    s1counts = sge_counts.getSNVCounts(snvfile1, augment=True, pseudocount=0)
-    s2counts = sge_counts.getSNVCounts(snvfile2, augment=True, pseudocount=0)
-    s1df = s1counts.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
-                     value_vars=["A", "C", "G", "T"],
-                     var_name="mutant_allele", value_name="count_s1")
-    s2df = s2counts.melt(id_vars=["chrom", "pos", "target", "repl", "day"],
-                     value_vars=["A", "C", "G", "T"],
-                     var_name="mutant_allele", value_name="count_s2")
-    df = s1df.merge(s2df, on=["chrom", "pos", "mutant_allele"])
+    s1counts = sge_counts.getSNVCounts(snvfile1, augment=False, pseudocount=0)
+    s2counts = sge_counts.getSNVCounts(snvfile2, augment=False, pseudocount=0)
+    s1counts = s1counts.rename(columns={'count': 'count_s1'})
+    s2counts = s2counts.rename(columns={'count': 'count_s2'})
+    df = s1counts.merge(s2counts, on=["chrom", "pos", "allele"])
     df = df[(df["pos"] >= target.editstartpos) & (df["pos"] <= target.editendpos)]
     df = df.merge(target.refdf, on="pos")
-    df = df[df["ref"] != df["mutant_allele"]]   
+    df = df[df["ref"] != df["allele"]]
+    df = df[~df["pos"].isin(target.required_edits)]
+    df = df[~df["pos"].isin(target.skip_pos)]
 
     # compute SNV correlation
     mycorr = df[["count_s1", "count_s2"]].corr().iloc[0,1]
@@ -43,7 +41,7 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
     '''
     mean_corrs = {}
     target = sge_target.Target(targetname, targetfile)
-    samples = target.getSamplelist(countsdir, include_neg=False)
+    samples = target.getSampleList(countsdir, include_neg=False)
     for day, repllist in samples.items():
         if len(repllist) > 1:
             corrs = []
