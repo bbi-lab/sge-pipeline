@@ -1,0 +1,104 @@
+#!/usr/bin/env python
+
+import argparse
+import sys
+import subprocess
+import pandas as pd
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_target
+
+# vcf is 1-based
+def writeSNVVCF(target, args):
+    refdf = target.getReferenceSequence()
+    refseq = refdf["ref"].tolist()
+    outfile = args.outdir + target.targetname + ".snvs.skeleton.vcf"
+    chrom = target.chrom
+    if chrom.startswith("chr"):
+        chrom = chrom[3:]
+    with open(outfile, "w") as outvcf:
+        outvcf.write("##fileformat=VCFv4.1\n")
+        outvcf.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        for index, refbase in enumerate(refseq):
+            alts = ["A", "C", "G", "T"]
+            alts.remove(refbase)
+            for alt in alts:
+                outline = f"{chrom}\t{target.ampstartpos + index}\t.\t{refbase}\t{alt}\t.\tPASS\t.\n"
+                outvcf.write(outline)
+    return outfile
+
+
+def writeDelVCF(target, args):
+    refdf = target.getReferenceSequence()
+    refseq = "".join(refdf["ref"].tolist())
+    #print(refseq)
+    outfile = args.outdir + target.targetname + ".dels.skeleton.vcf"
+    chrom = target.chrom
+    if chrom.startswith("chr"):
+        chrom = chrom[3:]
+    #print(outfile)
+    with open(outfile, "w") as outvcf:
+        outvcf.write("##fileformat=VCFv4.1\n")
+        outvcf.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        for index, refbase in enumerate(refseq):
+            try:
+                refallele = refseq[index:index+4]
+            except IndexError:
+                continue
+            altallele = refbase
+            outline = f"{target.chrom}\t{target.ampstartpos + index}\t.\t{refallele}\t{altallele}\t.\tPASS\t.\n"
+            outvcf.write(outline)
+    return outfile   
+
+
+def annotateWithVEP(args, invcf):
+    outfile = invcf.replace(".skeleton.vcf", ".vep.tsv")
+    subprocess.run(["vep", "--force_overwrite", "--pick",
+                    "--cache", "--dir_cache", 
+                    "/net/bbi/vol1/nobackup/external/vep/GRCh38",
+                    "--no_stats",
+                    "-i", invcf,
+                    "-o", outfile])
+    return outfile
+
+
+def main():
+    parser = argparse.ArgumentParser('write VEP annotations for all variants')
+    parser.add_argument('-n', '--targetname', required=False, default="",
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=True, 
+                        help="File containing list and coordinates of targets")
+    parser.add_argument('-o', '--outdir', required=True,
+                        help="Output directory for skeleton VCF files")
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    args = parser.parse_args()
+    
+    if not args.outdir.endswith("/"):
+        args.outdir = args.outdir + "/"
+
+    if not args.targetname:  # do all targets
+        targetdf = pd.read_csv(args.targetfile, header=0,
+                               sep="\t", dtype={'skip_pos': 'string'})
+        targets = targetdf["target"].unique().tolist()
+    else:
+        targets = [args.targetname]
+    
+    for t in targets:
+        target = sge_target.Target(t, args.targetfile)
+        if args.verbose:
+            print("INFO: processing target %s from %s" % (t, args.targetfile))
+        skeleton_vcf = writeSNVVCF(target, args)
+        outfile = annotateWithVEP(args, skeleton_vcf)
+        if args.verbose:
+            print("INFO: wrote annotated SNV output to %s" % outfile)
+        skeleton_vcf = writeDelVCF(target, args)
+        outfile = annotateWithVEP(args, skeleton_vcf)
+        if args.verbose:
+            print("INFO: wrote annotated deletion output to %s" % outfile)
+    return 0
+        
+    
+
+if __name__ == '__main__':
+    main()
