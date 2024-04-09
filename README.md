@@ -34,9 +34,78 @@ SGE files are generally stored in two locations.
 
 
 ## common workflows
-to be written
+This section provides an overview of the steps required to accomplish various tasks in the SGE pipeline.  
 
-### Adding new fastq files for an existing gene
-You may want to add a new exon region, or to add a new, later timepoint or additional replicate to existing exon target.  
 
 ### Adding a new gene
+A typical workflow is adding a new gene to the pipeline -- specifically, a gene for which no exons have been previously processed.  This step requires a bit of plumbing -- creating directories and some speciality files -- that's not necessary if you just want to add a new exon to an _existing_ gene.  
+
+1. ssh to the appropriate server and establish a `qlogin` session with minimal resource requirements (1 slot, 1 GB RAM).  
+
+1. Activate the `sge` conda enviromment if this is not done automatically for you: 
+
+    `$ conda activate sge`
+
+1. Create the necessary directories:
+
+```
+$ cd /net/bbi/vol1/data/
+$ GENE=YFG && mkdir -m 0775 sge-seq/fastq/${GENE} sge-seq/nobackup/merged/${GENE}
+$ GENE=YFG && mkdir -m 0775 sge-analysis/etc/${GENE} \
+  sge-analysis/nobackup/bam/${GENE}/ \
+  sge-analysis/nobackup/counts/${GENE}/
+```
+
+4. You will need a new targets file for _YFG_.  You may find it easier to copy an existing one and edit it, rather than starting from scratch.
+```
+$ cd /net/bbi/vol1/data/sge-analysis
+$ GENE=YFG && cp etc/BARD1/targets.tsv etc/${GENE}/targets.tsv
+```
+
+5. Create a Manifest for the FASTQ files for this gene.  See "Creating a Manifest" below.  
+
+### Adding a new target to an existing gene
+In this example, we will use _YFG_ as the name of the existing gene.  It is important to substitute the name of the actual gene when running the commands below.  
+
+1. ssh to the appropriate server and establish a `qlogin` session with minimal resource requirements (1 slot, 1 GB RAM).  
+
+1. Activate the `sge` conda enviromment if this is not done automatically for you: 
+
+    `$ conda activate sge`
+
+1. Update the targets file for _YFG_:
+   * Make a backup of the existing targets file:
+   
+     ```
+     $ cp /net/bbi/vol1/data/sge-analysis/etc/YFG/targets.tsv /net/bbi/vol1/data/sge-analysis/etc/YFG/targets.tsv.20240408
+     ```
+   * Obtain the coordinates and metadata of the new target.  You will need a number of pieces of information:
+     * amplicon start and stop coordinates
+     * edited region start and stop coordinates
+     * positions of and expected nucleotide changes to required edits
+     * any germline SNPs within the amplicon coordinates in the HAP1 genome, and other positions that need to be skipped in the analysis
+   * Edit the targets file (`emacs` or `vi` or your favorite editor) and add a new row with the metadata and coordinates you obtained
+   * Save the targets file
+
+1. Create a reference genome for the new target by running `extractReferenceFastas`.  This command will automatically read the targets file you just updated and will extract the reference sequence corresponding to your new target, and write it to the `--outdir` (output directory) below.  The reference genome will also be indexed for use with `bwa`.  There should be no reason to modify the `outdir` from what is shown, other than to change the gene name.  
+    ```
+    $ /net/bbi/vol1/data/sge-analysis/bin/extractReferenceFastas \
+    --targets /net/bbi/vol1/data/sge-analyis/etc/YFG/targets.tsv \
+    --outdir /net/bbi/vol1/data/sge-analysis/etc/YFG/
+    ```
+
+1. You will likely want variant annotations.  The default is to use `vep`, but in theory, other annotations can easily be supported (not covered here).  The process works by creating a skeleton VCF file containing all possible SNV variants, then annotating that VCF with `vep` and outputting the results in standard `vep` format.  The process is then repeated for 3-bp deletions.  
+    ```
+    $ /net/bbi/vol1/data/sge-analysis/bin/getVariantAnnotations \
+    --verbose \
+    --targetname name_of_new_target \
+    --targets /net/bbi/vol1/data/sge-analyis/etc/YFG/targets.tsv \
+    --outdir /net/bbi/vol1/data/sge-analyis/etc/YFG/ \
+    ```
+    The unannotated VCF files are not strictly needed after this command runs and can be deleted, but they take up virtually zero space, so there isn't any reason to worry about them.
+
+1. If you do not have FASTQ files to process, you're done for now.  If you do, you'll want to run them through the pipeline to extract the variant counts
+   
+
+### Adding new fastq files for an existing gene
+You may want to add a new replicate or timepoint to an existing target.  The process here is very similar to the process described above in "Adding a new target to an existing gene," except that certain steps can be skipped.  Start from step 6 above.
