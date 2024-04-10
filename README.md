@@ -104,8 +104,50 @@ In this example, we will use _YFG_ as the name of the existing gene.  It is impo
     ```
     The unannotated VCF files are not strictly needed after this command runs and can be deleted, but they take up virtually zero space, so there isn't any reason to worry about them.
 
-1. If you do not have FASTQ files to process, you're done for now.  If you do, you'll want to run them through the pipeline to extract the variant counts
-   
+1. Creating a Manifest: If you do not have FASTQ files to process, you're done for now.  If you do, you'll want to run them through the pipeline to extract the variant counts.  You'll create a Manifest that shows the source of the files.  Documentation on how to produce this Manifest is forthcoming.  For now, please see one of the existing Manifest files for the current SGE genes, e.g. `/net/bbi/vol1/data/sge-seq/fastq/RAD51D/MANIFEST.txt`
+
+```
+$ /net/bbi/vol1/data/sge-analysis/bin/manifestToPipelineInput -h
+usage: Convert MANIFEST to pipeline input files [-h] -o OUTPUT [-f FILTER] [-v] N [N ...]
+
+positional arguments:
+  N                     path to one or more MANIFEST files
+
+options:
+  -h, --help            show this help message and exit
+  -o OUTPUT, --output OUTPUT
+                        Path to output file for use with pipeline
+  -f FILTER, --filter FILTER
+                        Only process sampels with MANIFEST date matching <filter>
+  -v, --verbose         Turn on verbose output
+  
+```
 
 ### Adding new fastq files for an existing gene
 You may want to add a new replicate or timepoint to an existing target.  The process here is very similar to the process described above in "Adding a new target to an existing gene," except that certain steps can be skipped.  Start from step 6 above.
+
+### Score a target
+
+Once the various timepoints, replicates, and libraries have been processed by the pipeline to produce counts files, the scoring process brings those files together to compute and output scores for each variant.  This scoring process is done separately for the SNVs and the deletions, but a single script computes both sets of scores.  Scores are output in TSV format for ease of downstream visualization (etc), but in future work, scores may be output in VCF format.  The script can also produce figures showing the distributions of scores broken down by variant annotation (stop gain, missense, etc).  
+
+The script to perform the analysis is called `scoreTarget`.  It takes a lot of arguments.  To see a list, run `/net/bbi/vol1/data/sge-analysis/bin/scoreTarget --help` on the command line.  Here's an example command for scoring the X4D target of BARD1, producing TSVs and figures for both deletions and SNVs:
+
+```
+/net/bbi/vol1/data/sge-analysis/bin/scoreTarget \
+  -v \
+  -n BARD1_X4D \
+  -t /net/bbi/vol1/data/sge-analysis/etc/BARD1/targets.tsv \
+  -s /net/bbi/vol1/data/sge-analysis/work/BARD1_X4D.snvscores.tsv \
+  -c /net/bbi/vol1/data/sge-analysis/nobackup/counts/BARD1 \
+  -V /net/bbi/vol1/data/sge-analysis/tmp/myvcf/BARD1_X4D.snvs.vep.tsv \
+  -S /net/bbi/vol1/data/sge-analysis/work/BARD1_X4D.snvfig.html \
+  -U /net/bbi/vol1/data/sge-analysis/tmp/myvcf/BARD1_X4D.dels.vep.tsv \
+  -d /net/bbi/vol1/data/sge-analysis/work/BARD1_X4D.delscores.tsv \
+  -D /net/bbi/vol1/data/sge-analysis/work/BARD1_X4D.delfig.html
+```
+
+Output figures can be in either html or png format, auto-detected based on the file extension you specify.  
+
+Scores are currently based on the median log2 ratios between the per-variant frequency at time _t_ and in the library at day 0.  In most cases, _t_ is Day 13, although in some cases, Day 11 may be used.  The timepoint should be auto-detected.  In the future, other scoring strategies may be supported.
+
+The output TSV files include the per-replicate, per-timepoint scores as well as the overall score described above.
