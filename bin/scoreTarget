@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import sys
-import os
 import argparse
 from collections import defaultdict
 import altair as alt
@@ -15,64 +14,48 @@ import sge_altair
 import sge_target
 
 
-def saveSNVScoreFigure(plotdf, args):
-    overallmax = np.nanmax(plotdf[np.isfinite(plotdf[["log2ratio_recentered", "log2ratio"]])][["log2ratio_recentered", "log2ratio"]])
-    overallmin = np.nanmin(plotdf[np.isfinite(plotdf[["log2ratio_recentered", "log2ratio"]])][["log2ratio_recentered", "log2ratio"]])
+def saveDelScoreFigure(target, args, plotdf):
+    delfiles = target.getDelSampleList(args.countsdir,
+                                       include_neg=False)
+    alldays = sorted(delfiles.keys())
+    alldays.remove('D00')
+    lateday = alldays[1]
+    scorecol = "%s_log2_median" % lateday
+    overallmax = np.nanmax(plotdf[np.isfinite(plotdf[scorecol])][scorecol])
+    overallmin = np.nanmin(plotdf[np.isfinite(plotdf[scorecol])][scorecol])
 
-    scorecol = alt.binding_select(
-        options=['log2ratio', 'log2ratio_recentered'],
-        name='Score type',
-        labels=['raw', 'recentered']
-    )
-    ycol_param = alt.param(
-        value='log2ratio',
-        bind=scorecol
-    )
-
-    day_dropdown = alt.binding_select(options=days, name='Day ', )
-    day_selection = alt.selection_point(fields=['day'], 
-                                    bind=day_dropdown, value=days[0])
-
-    repl_dropdown = alt.binding_select(options=repls + ["mean", "median"], name='Replicate ', )
-    repl_selection = alt.selection_point(fields=['repl'], 
-                                    bind=repl_dropdown, value="median")
-
-    selection = (repl_selection & day_selection)
-    brush = alt.selection_interval(encodings=['x'])
-    consequence_selection = alt.selection_point(fields=['Consequence'], bind='legend')
-
-    a = alt.Chart(plotdf, height=200, width=1200).mark_point(filled=True, size=50).encode(
-        x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
-    ),
-        y=alt.Y('y:Q', title="log2 ratio", scale=alt.Scale()),
-        color=alt.Color('Consequence:N', title="Variant type"),
-        opacity=alt.condition(consequence_selection, alt.value(1), alt.value(0.2)),
-        tooltip=['pos', 'mutant_allele', 'ref', 'posid','Consequence', 'log2ratio', 'log2ratio_recentered']
-    ).transform_filter(
-        selection
-    ).transform_calculate(
-        y=f'datum[{ycol_param.name}]'
-    ).add_params(
-        repl_selection, day_selection, consequence_selection, brush, ycol_param
-    ).interactive()
-
+    a = alt.Chart(
+            plotdf, height=300, width=1200
+        ).mark_rule(
+            size=5, clip=True
+        ).encode(
+            x=alt.X(
+                'start:Q', title='Deletion coordinates'
+            ).scale(
+                zero=False
+            ),
+            x2='end:Q',
+            y=alt.Y(
+                '%s:Q' % scorecol, title='median log2 ratio'
+            ).scale(
+                zero=False
+            ),
+            color=alt.Color(
+                'Consequence:N', 
+                scale=alt.Scale(scheme='category10'),
+            ),
+            tooltip=['chrom', 'start', 'end','Consequence', scorecol]
+        ) 
+    
     b = alt.Chart(plotdf, width=550, height=250
             ).mark_bar(
         opacity=0.9,
         binSpacing=0
     ).encode(
-        x=alt.X('y:Q', title="log2 ratio", 
+        x=alt.X('%s:Q' % scorecol, title="median log2 ratio", 
             axis=alt.Axis(labelFontSize=12, labelAngle=315)).bin(extent=[overallmin, overallmax], step=0.1),
-        y=alt.Y('count()', title="number of variants").stack("zero"),
+        y=alt.Y('count()', title="number of deletions").stack("zero"),
         color=alt.Color('Consequence:N', title="Variant type", scale=alt.Scale(scheme="category10"))
-    ).transform_filter(
-        selection
-    ).transform_filter(
-        brush
-    ).transform_calculate(
-        y=f'datum[{ycol_param.name}]'
-    ).add_params(
-        repl_selection, day_selection, ycol_param
     )
 
     c = alt.Chart(plotdf, width=550, height=250
@@ -80,61 +63,164 @@ def saveSNVScoreFigure(plotdf, args):
         opacity=0.9,
         binSpacing=0
     ).encode(
-        x=alt.X('y:Q', title="log2 ratio", 
+        x=alt.X('%s:Q' % scorecol, title="median log2 ratio", 
             axis=alt.Axis(labelFontSize=12, labelAngle=315)).bin(extent=[overallmin, overallmax], step=0.1),
         y=alt.Y('count()', title="Distribution within score bin").stack("normalize"),
         color=alt.Color('Consequence:N', title="Variant type", scale=alt.Scale(scheme="category10"))
-    ).transform_filter(
-        selection
-    ).transform_filter(
-        brush
-    ).transform_calculate(
-        y=f'datum[{ycol_param.name}]'
-    ).add_params(
-        repl_selection, day_selection, ycol_param
     )
-
-    scorechart = (a & (b | c)).properties(title="log2 ratio scores for %s" % exonname).configure_title(fontSize=20, 
-                    offset=5, 
-                    orient='top', 
-                    anchor='middle',
+    scorechart = (a & (b | c)).properties(
+        title="Deletion scores for %s at timepoint %s" % (target.targetname, lateday)
+    ).configure_title(
+        fontSize=20, 
+        offset=5, 
+        orient='top', 
+        anchor='middle',
     )
-    scorechart.save("viz/%s.scores.html" % exonname)
+    scorechart.save(args.delfig)
     return
 
 
-def scoreDels(args, scoreall=True):
+def saveSNVScoreFigure(target, args, plotdf):
+    snvfiles = target.getSNVSampleList(args.countsdir,
+                                       include_neg=False)
+    alldays = sorted(snvfiles.keys())
+    alldays.remove('D00')
+    lateday = alldays[1]
+    scorecol = "%s_log2_median" % lateday
+    overallmax = np.nanmax(plotdf[np.isfinite(plotdf[scorecol])][scorecol])
+    overallmin = np.nanmin(plotdf[np.isfinite(plotdf[scorecol])][scorecol])
+
+    a = alt.Chart(plotdf, height=200, width=1200).mark_point(filled=True, size=50).encode(
+        x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
+    ),
+        y=alt.Y('%s:Q' % scorecol, title="median log2 ratio", scale=alt.Scale()),
+        color=alt.Color('Consequence:N', title="Variant type"),
+        #opacity=alt.condition(consequence_selection, alt.value(1), alt.value(0.2)),
+        tooltip=['pos', 'allele', 'ref', 'pos_id','Consequence', scorecol]
+    ).interactive()
+
+    b = alt.Chart(plotdf, width=550, height=250
+            ).mark_bar(
+        opacity=0.9,
+        binSpacing=0
+    ).encode(
+        x=alt.X('%s:Q' % scorecol, title="median log2 ratio", 
+            axis=alt.Axis(labelFontSize=12, labelAngle=315)).bin(extent=[overallmin, overallmax], step=0.1),
+        y=alt.Y('count()', title="number of variants").stack("zero"),
+        color=alt.Color('Consequence:N', title="Variant type", scale=alt.Scale(scheme="category10"))
+    )
+
+    c = alt.Chart(plotdf, width=550, height=250
+            ).mark_bar(
+        opacity=0.9,
+        binSpacing=0
+    ).encode(
+        x=alt.X('%s:Q' % scorecol, title="median log2 ratio", 
+            axis=alt.Axis(labelFontSize=12, labelAngle=315)).bin(extent=[overallmin, overallmax], step=0.1),
+        y=alt.Y('count()', title="Distribution within score bin").stack("normalize"),
+        color=alt.Color('Consequence:N', title="Variant type", scale=alt.Scale(scheme="category10"))
+    )
+    scorechart = (a & (b | c)).properties(
+        title="SNV scores for %s at timepoint %s" % (target.targetname, lateday)
+    ).configure_title(
+        fontSize=20, 
+        offset=5, 
+        orient='top', 
+        anchor='middle',
+    )
+    scorechart.save(args.snvfig)
+    return
+
+
+def scoreDels(target, args):
     '''compute scores for the 3bp programmed deletions
     
     '''
-    chrom, startpos, endpos = sge_util.getTargetEditRegion(args.targetfile, args.targetname)
-    skip_pos = sge_util.getTargetSkipPositions(args.targetfile, args.targetname)
-    req_edits = sge_util.getTargetRequiredEdits(args.targetfile, args.targetname)
+    # load the day 0 library
+    delfiles = target.getDelSampleList(args.countsdir,
+                                    include_neg=False)
+    libfile = delfiles['D00'][0]
+    df = sge_counts.getDelCounts(libfile,
+                                 augment=True,
+                                 pseudocount=args.pseudocount)
+    df = df.rename(columns={'count': 'dellib_count'}
+        ).drop(columns=["sampleid", "repl", "day"])
+    statsfile = libfile.replace(".dels.tsv", ".readstats.tsv")
+    statsdf = sge_counts.getReadStats(statsfile, augment=False)
+    normval = statsdf["deletion_reads"][0]
+    df['dellib_freq'] = df['dellib_count'] / normval
 
-    # read deletion counts files
-    deldf = pd.DataFrame()
-    delfiles = sge_counts.getAllDelCountFiles(args.targetname,
-                                              args.countsdir,
-                                              filterstring="NC_")
-    for delfile in delfiles:
-        tmpdf = sge_counts.getDelCounts(delfile, augment=True)
-        if scoreall:
-            tmpdf = addMissingDels(tmpdf, chrom, startpos, endpos)
-        deldf = pd.concat([deldf, tmpdf])
-    deldf = deldf.reset_index(drop=True)
+    if args.verbose:
+        print("INFO: Loaded data from deletion Day 0 library")
 
-    # read ReadStats files
-    statsdf = pd.DataFrame()
-    statsfiles = sge_counts.getAllReadStatsFiles(args.targetname,
-                                                 args.countsdir,
-                                                 filterstring="NC_")
-    for statsfile in statsfiles:
-        tmpdf = sge_counts.getReadStats(statsfile, augment=True)
-        statsdf = pd.concat([statsdf, tmpdf])
-    statsdf = statsdf.reset_index(drop=True)
+    # load the various timepoints and replicates
+    nsamples = 1
+    allrepls = {}
+
+    for delday, delfilelist in sorted(delfiles.items()):
+        if delday == "D00": continue  # already loaded
+        allrepls[delday] = []
+        for delfile in sorted(delfilelist):
+            # exclude neg
+            if "_NC_" in delfile:
+                continue
+            nsamples += 1
+            if args.verbose:
+                print("INFO: loading data from %s" % delfile)
+            tmpdf = sge_counts.getDelCounts(delfile,
+                                            augment=False,
+                                            pseudocount=args.pseudocount)
+            statsfile = delfile.replace(".dels.tsv", ".readstats.tsv")
+            statsdf = sge_counts.getReadStats(statsfile, augment=False)
+            sampleid = tmpdf["sampleid"][0]
+            parts = sampleid.split("_")
+            repl = parts[2]
+            allrepls[delday].append(repl)
+            countcol = "%s_%s" % (delday, repl)
+            tmpdf = tmpdf.rename(columns={'count': countcol})
+            freqcol = countcol + "_freq"
+            normval = statsdf["deletion_reads"][0]
+            tmpdf[freqcol] = tmpdf[countcol] / normval
+            df = df.merge(tmpdf[["chrom", "start", "end", countcol, freqcol]], on=["chrom", "start", "end"])
+    if args.verbose:
+        print("INFO: Finished loading data from %d samples" % nsamples)
+        print("INFO: Found data from timepoints: ", list(allrepls.keys()))
+
+    df = df[(df["start"] >= target.editstartpos) &
+            (df["end"] <= target.editendpos)]
+
+    # annotate with vep preditions
+    vepdf = sge_util.getVEPdf(args.delvepfile, type="del")
+
+    df = df.merge(vepdf[["start", "end", "Consequence"]], 
+                  on=["start", "end"]) 
+
+    # now we have counts, frequencies, and annotations for each position and each sample.
+    # next step is to convert them into scores
+    for day, repls in sorted(allrepls.items()):
+        for repl in repls:
+            freqcol = "%s_%s_freq" % (day, repl)
+            ratiocol = "%s_%s_over_lib" % (day, repl)
+            df[ratiocol] = df[freqcol] / df['dellib_freq']
+
+    # we also need day 13 (or day 11) vs day 5, per replicate
+    days = sorted(allrepls.keys())
+    earlyday = days[0]
+    lateday = days[1]
+    for repl in allrepls[earlyday]:
+        if repl in allrepls[lateday]:
+            df["%s_%s_over_%s_%s" % (lateday, repl, earlyday, repl)] = \
+                df["%s_%s_freq" % (lateday, repl)] / df["%s_%s_freq" % (earlyday, repl)]
 
 
+    for day, repls in sorted(allrepls.items()):
+        replcols = []
+        for repl in repls:
+            replcols.append("%s_%s_over_lib" % (day, repl))
+        df["%s_over_lib_median" % day] = df[replcols].median(axis=1)
+        df["%s_log2_median" % day] = np.log2(df["%s_over_lib_median" % day])
 
+    return df
 
 
 def scoreSNVs(target, args):
@@ -142,7 +228,7 @@ def scoreSNVs(target, args):
     
     '''
     # load the day 0 library
-    snvfiles = target.getSampleList(args.countsdir,
+    snvfiles = target.getSNVSampleList(args.countsdir,
                                     include_neg=False)
     libfile = snvfiles['D00'][0]
     df = sge_counts.getSNVCounts(libfile,
@@ -203,7 +289,7 @@ def scoreSNVs(target, args):
     df.loc[df["pos"].isin(target.skip_pos), "pam_edit_or_snp"] = True
 
     # annotate with vep preditions
-    vepdf = sge_util.getVEPdf(args.vepfile)
+    vepdf = sge_util.getVEPdf(args.snvvepfile)
     df = df.merge(vepdf[["pos", "allele", "Consequence"]], 
                   on=["pos", "allele"]) 
 
@@ -237,11 +323,19 @@ def scoreSNVs(target, args):
     return df
 
 
-def saveSNVscores(args, scoredf):
+def saveSNVScores(args, scoredf):
     outfile = args.snvtsv
     scoredf.to_csv(outfile, index=False, sep="\t")
     if args.verbose:
         print("INFO: wrote SNV scores to %s" % outfile)
+    return
+
+
+def saveDelScores(args, scoredf):
+    outfile = args.deltsv
+    scoredf.to_csv(outfile, index=False, sep="\t")
+    if args.verbose:
+        print("INFO: wrote Deletion scores to %s" % outfile)
     return
 
 
@@ -261,8 +355,10 @@ def main():
                         help="Output figure of deletion scores")
     parser.add_argument('-c', '--countsdir', required=True, default="",
                         help="Directory containing per-sample SNV counts files")
-    parser.add_argument('-V', '--vepfile', required=True, default="",
-                        help="output from Variant Effect Predictor for this target")
+    parser.add_argument('-V', '--snvvepfile', required=True, default="",
+                        help="output from Variant Effect Predictor for this SNV library")
+    parser.add_argument('-U', '--delvepfile', required=False, default="",
+                        help="output from Variant Effect Predictor for this deletion library")
     parser.add_argument('-p', '--pseudocount', type=int, default=1, required=False,
                         help="add <pseudocount> to any zero-count position")
     parser.add_argument('-N', '--normcol', required=False, default="snv_reads",
@@ -274,10 +370,29 @@ def main():
 
     target = sge_target.Target(args.targetname, args.targetfile)
 
+    if args.snvfig:
+        if not args.snvfig.endswith(".html") and not args.snvfig.endswith(".png"):
+            sys.stderr.write("ERROR: SNV figure output file must end in .html or .png\n")
+            sys.exit(-1)
+
+    if args.delfig:
+        if not args.delfig.endswith(".html") and not args.snvfig.endswith(".png"):
+            sys.stderr.write("ERROR: Deletion figure output file must end in .html or .png\n")
+            sys.exit(-1)
+
     # SNV scoring
     if args.snvtsv:
         scoredf = scoreSNVs(target, args)
-        saveSNVscores(args, scoredf)
+        saveSNVScores(args, scoredf)
+        if args.snvfig:
+            saveSNVScoreFigure(target, args, scoredf)
+    
+    if args.deltsv:
+        scoredf = scoreDels(target, args)
+        saveDelScores(args, scoredf)
+        if args.delfig:
+            saveDelScoreFigure(target, args, scoredf)
+
     return 0
 
 

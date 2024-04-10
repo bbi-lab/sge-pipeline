@@ -41,7 +41,7 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
     '''
     mean_corrs = {}
     target = sge_target.Target(targetname, targetfile)
-    samples = target.getSampleList(countsdir, include_neg=False)
+    samples = target.getSNVSampleList(countsdir, include_neg=False)
     for day, repllist in samples.items():
         if len(repllist) > 1:
             corrs = []
@@ -54,13 +54,23 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
 
 
 
-def getVEPdf(vepfile):
+def getVEPdf(vepfile, type="snv"):
     '''reads the output of Variant Effect Predictor files, converts to 
     pandas df, and returns it
 
     '''
-    vepdf = pd.read_csv(vepfile, sep="\t", skiprows=41)
-    vepdf = vepdf.rename(columns={'Allele': 'allele'})
-    vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
-    vepdf["pos"] = vepdf["pos"].astype(int)
+    if type == "snv":
+        vepdf = pd.read_csv(vepfile, sep="\t", skiprows=41)
+        vepdf = vepdf.rename(columns={'Allele': 'allele'})
+        vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
+        vepdf["pos"] = vepdf["pos"].astype(int)
+    elif type == "del":
+        vepdf = pd.read_csv(vepfile, sep="\t", skiprows=41)
+        vepdf[["chrom", "coords"]] = vepdf["Location"].str.split(":", expand=True)
+        vepdf[["start", "end"]] = vepdf["coords"].str.split("-", expand=True)
+        vepdf["start"] = vepdf["start"].astype(int)
+        vepdf["end"] = vepdf["end"].astype(int)
+    else:
+        return None
     return vepdf
+

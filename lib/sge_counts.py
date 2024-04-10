@@ -48,7 +48,7 @@ def getAllReadStatsFiles(target, path, filterstring=""):
 
 
 
-def getDelCounts(filename, augment=True):
+def getDelCounts(filename, augment=True, pseudocount=0):
     '''read in a counts file for deletions
     
     args: filename: full path to the file with counts
@@ -64,6 +64,10 @@ def getDelCounts(filename, augment=True):
         df["gene"] = gene
         df["repl"] = repl
         df["day"] = day
+    
+    if pseudocount > 0:
+        df["count"] = df["count"].replace(0, pseudocount)
+    df = df.reset_index(drop=True)
     return df
 
 

@@ -75,8 +75,9 @@ class Target:
         return refdf
 
  
-    def getSampleList(self, countsdir, include_neg=False):
-        '''performs a directory lookup of all files matching a specific target name in a 
+    def getSNVSampleList(self, countsdir, include_neg=False):
+        '''performs a directory lookup of all SNV counts files matching a 
+        specific target name in a 
         given counts directory, and returns a dictionary of filenames:
         (string) day --> [ (string) full_filename1, (string) full_filename2, ... ]
 
@@ -98,6 +99,33 @@ class Target:
             if day not in samples:
                 samples[day] = []
             samples[day].append(fullfn)
-        self.samples = samples
+        self.snvsamples = samples
         return samples
     
+    
+    def getDelSampleList(self, countsdir, include_neg=False):
+        '''performs a directory lookup of all del counts files matching a 
+        specific target name in a 
+        given counts directory, and returns a dictionary of filenames:
+        (string) day --> [ (string) full_filename1, (string) full_filename2, ... ]
+
+        if include_neg is True, the negative control sample is included; otherwise it is
+        excluded from the list of samples
+
+        '''
+        samples = {}
+        if countsdir.endswith("/"):
+            countsdir = countsdir[:-1]
+        for fullfn in glob.glob("%s/%s_*.dels.tsv" % (countsdir, self.targetname)):
+            fn = fullfn.split("/")[-1]
+            parts = fn.split(".")[0].split("_")
+            repl = parts[2]
+            if not include_neg:
+                if repl == 'NC': # throw out the negative control
+                    continue
+            day = parts[3]
+            if day not in samples:
+                samples[day] = []
+            samples[day].append(fullfn)
+        self.delsamples = samples
+        return samples

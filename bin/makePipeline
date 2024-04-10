@@ -55,7 +55,7 @@ OUTMERGED=${{BASENAME}}.merged.fq.gz
 FQ_NO_N_FILE=${{BASENAME}}.merged.noNs.fq.gz
 
 # for mapping
-FAFILE=${{ETCDIR}}/etc/${{EXONNAME}}.fa
+FAFILE=${{ETCDIR}}/${{GENENAME}}_${{EXONNAME}}.fa
 OUTBAM=${{BASENAME}}.bam
 
 source $HOME/.bashrc
@@ -80,7 +80,7 @@ bwa mem ${{FAFILE}} ${{FQDIR}}/${{FQ_NO_N_FILE}} | samtools view -bS - \\
   > ${{BAMDIR}}/${{OUTBAM}}
 
 /net/bbi/vol1/data/sge-analysis/bin/generateEditCounts \\
-  -n ${{GENE}}_${{EXONNAME}} \\
+  -n ${{GENENAME}}_${{EXONNAME}} \\
   -t ${{ETCDIR}}/targets.tsv \\
   -s ${{COUNTSDIR}}/${{BASENAME}}.snvs.tsv \\
   -d ${{COUNTSDIR}}/${{BASENAME}}.dels.tsv \\
