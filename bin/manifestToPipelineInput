@@ -6,7 +6,9 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser('Convert MANIFEST to pipeline input files')
-    parser.add_argument('-m', '--manifest', required=True, help='Path to MANIFEST file')
+    parser.add_argument('manifests', metavar='N', nargs='+',
+                    help='path to one or more MANIFEST files')
+    #parser.add_argument('-m', '--manifest', required=True, help='Path to MANIFEST file')
     parser.add_argument('-o', '--output', required=True, help='Path to output file for use with pipeline')
     parser.add_argument('-f', '--filter', default="", help="Only process sampels with MANIFEST date matching <filter>",
                         required=False)
@@ -15,15 +17,18 @@ def main():
     args = parser.parse_args()
     VERBOSE=args.verbose
 
-    df = pd.read_csv(args.manifest, header=None, sep="\t",
-                      names=['sample_id', 'orig_fastq', 'fastq', 'date'])
-    if VERBOSE:
-        print("INFO: read %d lines from %s" % (df.shape[0], args.manifest))
-    if args.filter:
-        df = df[df["date"] == args.filter]
+    df = pd.DataFrame()
+    for manifest in args.manifests:
+        tmpdf = pd.read_csv(manifest, header=None, sep="\t",
+                            names=['sample_id', 'orig_fastq', 'fastq', 'date'])
         if VERBOSE:
-            print("INFO: applied filter, leaving %d entries" % (df.shape[0]))
-    
+            print("INFO: read %d lines from %s" % (tmpdf.shape[0], manifest))
+        if args.filter:
+            tmpdf = tmpdf[tmpdf["date"] == args.filter]
+            if VERBOSE:
+                print("INFO: applied filter, leaving %d entries" % (tmpdf.shape[0]))
+        df = pd.concat([df, tmpdf])
+
     samples = df["sample_id"].unique().tolist()
     with open(args.output, "w") as outfile:
         for s in samples:
@@ -42,7 +47,6 @@ def main():
                 sys.stderr.write("ERROR: couldn't find read 1 or read 2 for %s\n" % s)
                 continue
             outfile.write("%s\t%s\t%s\t%s\t%s\n" % (gene, exon, s, r1, r2))
-    
 
 
 if __name__ == '__main__':
