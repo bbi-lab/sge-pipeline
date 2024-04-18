@@ -6,6 +6,7 @@ from collections import defaultdict
 import altair as alt
 import pandas as pd
 import numpy as np
+import loess.loess_1d
 
 sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
 import sge_util
@@ -291,9 +292,8 @@ def scoreSNVs(target, args):
     # annotate with vep preditions
     vepdf = sge_util.getVEPdf(args.snvvepfile)
     df = df.merge(vepdf[["pos", "allele", "Consequence"]], 
-                  on=["pos", "allele"]) 
-
-
+                  on=["pos", "allele"])
+    df['Consequence'] = df['Consequence'].map(lambda x: x.split(",")[0])
 
     # now we have counts, frequencies, and annotations for each position and each sample.
     # next step is to convert them into scores
@@ -302,24 +302,103 @@ def scoreSNVs(target, args):
             freqcol = "%s_%s_freq" % (day, repl)
             ratiocol = "%s_%s_over_lib" % (day, repl)
             df[ratiocol] = df[freqcol] / df['snvlib_freq']
+            log2col = "%s_%s_over_lib_log2" % (day, repl)
+            df[log2col] = np.log2(df[ratiocol])
 
     # we also need day 13 (or day 11) vs day 5, per replicate
-    days = sorted(allrepls.keys())
-    earlyday = days[0]
-    lateday = days[1]
+    earlyday = target.earlyday
+    lateday = target.lateday
     for repl in allrepls[earlyday]:
         if repl in allrepls[lateday]:
             df["%s_%s_over_%s_%s" % (lateday, repl, earlyday, repl)] = \
                 df["%s_%s_freq" % (lateday, repl)] / df["%s_%s_freq" % (earlyday, repl)]
+            df["%s_%s_over_%s_%s_log2" % (lateday, repl, earlyday, repl)] = \
+                np.log2(df["%s_%s_over_%s_%s" % (lateday, repl, earlyday, repl)])
 
 
-    for day, repls in sorted(allrepls.items()):
-        replcols = []
-        for repl in repls:
-            replcols.append("%s_%s_over_lib" % (day, repl))
-        df["%s_over_lib_median" % day] = df[replcols].median(axis=1)
-        df["%s_log2_median" % day] = np.log2(df["%s_over_lib_median" % day])
+    return df
 
+
+def smoothSNVscores(target, args, df):
+    earlyday = target.earlyday
+    lateday = target.lateday
+    filtercols = [col for col in df.columns if col.startswith("%s_" % earlyday) \
+                  and col.endswith("over_lib")]
+    cond = (df[filtercols[0]] >= 0.5)
+    if len(filtercols) > 1:
+        for col in filtercols[1:]:
+            cond &= (df[col] >= 0.5)
+
+    fullcount = df.shape[0]
+    filtdf = df[cond]
+    filtcount = filtdf.shape[0]
+    if args.verbose:
+        print("INFO: smoothing started with %d variants" % fullcount)
+        print("INFO: after filtering with threshold=%f, %d variants remain" % (0.5,
+                                                                           filtcount))
+
+    for col in filtercols:
+        newcol = col.replace("over_lib", "over_lib_loess")
+        xlist = filtdf['pos'].to_numpy()
+        ylist = filtdf[col].to_numpy()
+        ylist = np.log2(ylist)
+        xout, yout, wout = loess.loess_1d.loess_1d(xlist,
+                                                   ylist,
+                                                   xnew=None,
+                                                   frac=0.15)
+        mydata = np.array([xout, yout])
+        tmpdf = pd.DataFrame(data=mydata.T, columns=["pos", newcol]
+            ).drop_duplicates(subset=['pos'], keep='first')
+        tmpdf['pos'] = tmpdf['pos'].astype(int)
+        df = pd.merge_asof(df, tmpdf, on='pos', direction='nearest')
+        log2col = col.replace(earlyday, lateday)
+        latelog2 = np.log2(df[log2col].to_numpy())
+        latelog2col = log2col.replace("over_lib", "over_lib_log2")
+        df[latelog2col] = latelog2
+        diffcol = log2col.replace("over_lib", "loess_adjust")
+        df[diffcol] = df[latelog2col] - df[newcol]
+
+    return df
+        
+
+def normalizeSNVscores(target, args, df):
+    lateday = target.lateday
+    scorecols = [col for col in df.columns if col.startswith("%s_" % lateday) \
+                 and col.endswith("loess_adjust")]
+    synmedians = []
+    nonmedians = []
+    for col in scorecols:
+        synmedian = df[df["Consequence"] == "synonymous_variant"][col].median()
+        nonmedian = df[df["Consequence"] == "stop_gained"][col].median()
+        if args.verbose:
+            print("INFO: median synonymous score=%f for %s" % (synmedian, col))
+            print("INFO: median nonsense score=%f for %s" % (nonmedian, col))
+        synmedians.append(synmedian)
+        nonmedians.append(nonmedian)
+    mediansynmedian = np.median(synmedians)
+    mediannonmedian = np.median(nonmedians)
+    mediandist = mediansynmedian - mediannonmedian # distance between medians
+    if args.verbose:
+        print("INFO: median distance=%f between synonymous and nonsense medians" % (mediandist))
+
+    # now scale scores
+    newcols = []
+    for index, col in enumerate(scorecols):
+        dist = synmedians[index] - nonmedians[index]
+        distratio = dist / mediandist
+        if args.verbose:
+            print("INFO: distance ratio=%f for %s" % (distratio, col))
+        scaledcol = df[col] * 1.0 / distratio
+        newsynmedian = synmedians[index] * 1.0 / distratio
+        locationshift = newsynmedian - mediansynmedian
+        if args.verbose:
+            print("INFO: location shift=%f for %s" % (locationshift, col))
+
+        locatedcol = scaledcol - locationshift
+        newcolname = col.replace("loess_adjust", "scaled")
+        df[newcolname] = locatedcol        
+        newcols.append(newcolname)
+    df["target_score"] = df[newcols].median(axis=1)
     return df
 
 
@@ -383,6 +462,8 @@ def main():
     # SNV scoring
     if args.snvtsv:
         scoredf = scoreSNVs(target, args)
+        scoredf = smoothSNVscores(target, args, scoredf)
+        scoredf = normalizeSNVscores(target, args, scoredf)
         saveSNVScores(args, scoredf)
         if args.snvfig:
             saveSNVScoreFigure(target, args, scoredf)
