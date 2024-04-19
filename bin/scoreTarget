@@ -237,6 +237,7 @@ def scoreSNVs(target, args):
                                  pseudocount=args.pseudocount)
     df = df.rename(columns={'count': 'snvlib_count'}
         ).drop(columns=["sampleid", "repl", "day"])
+    
     statsfile = libfile.replace(".snvs.tsv", ".readstats.tsv")
     statsdf = sge_counts.getReadStats(statsfile, augment=False)
     normval = statsdf[args.normcol][0]
@@ -294,6 +295,10 @@ def scoreSNVs(target, args):
     df = df.merge(vepdf[["pos", "allele", "Consequence"]], 
                   on=["pos", "allele"])
     df['Consequence'] = df['Consequence'].map(lambda x: x.split(",")[0])
+
+    # remove positions we don't care about
+    df = df[df["pam_edit_or_snp"] == False]
+
 
     # now we have counts, frequencies, and annotations for each position and each sample.
     # next step is to convert them into scores

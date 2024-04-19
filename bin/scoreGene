@@ -1,29 +1,9 @@
 #!/usr/bin/env python
-'''
-Position-adjusted log2 day 11 over
-library ratios were normalized first across exon replicates, and then across all
-assayed exons. To do this, scores from within each replicate were linearly scaled
-such that the median synonymous and median nonsense SNVs within the replicate
-would match the median synonymous and median nonsense SNV values averaged
-across replicate experiments. The ensuing SNV scores for each replicate were then
-normalized across all exons in the same manner, such that each exon’s median
-synonymous and median nonsense SNV scores would match the global median
-synonymous and the global median nonsense SNV scores, respectively.
 
-'''
 import sys
 import argparse
-from collections import defaultdict
-import altair as alt
 import pandas as pd
-import numpy as np
-import loess.loess_1d
 
-sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
-import sge_util
-import sge_counts
-import sge_altair
-import sge_target
 
 
 def normalizeSNVscores(args):
@@ -39,6 +19,7 @@ def normalizeSNVscores(args):
                                                                   scorefile))
         df = pd.concat([df, tmpdf])
     df = df.reset_index(drop=True)
+    df = df[df["pam_edit_or_snp"] == False]
 
     # now all scores have been read in
     scorecol = "target_score"
@@ -89,6 +70,13 @@ def collapseScores(df):
     return df
 
 
+def quasiMinMax(df):
+    synmed = df[(df["Consequence"] == "synonymous_variant")]["snv_score"].median() 
+    nonmed = df[(df["Consequence"] == "stop_gained")]["snv_score"].median()
+    df["snv_score_minmax"] = ((df["snv_score"] - nonmed) / (synmed - nonmed))
+    return df
+
+
 def saveSNVScores(args, df):
     outfile = args.output
     df.to_csv(outfile, index=False, sep="\t")
@@ -111,8 +99,10 @@ def main():
         sys.stderr.write("ERROR: Must supply at least two score files\n")
         sys.exit(-99)
 
+    # main workflow
     df = normalizeSNVscores(args)
     df = collapseScores(df)
+    df = quasiMinMax(df)
     saveSNVScores(args, df)
 
 
