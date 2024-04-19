@@ -1,0 +1,114 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+import pandas as pd
+
+
+
+def normalizeSNVscores(args):
+    resultcol = "scaled_snv_score"
+    targets = []
+    df = pd.DataFrame()
+    for scorefile in args.scorefiles:
+        tmpdf = pd.read_csv(scorefile, sep="\t", header=0)
+        targets.append(tmpdf["target"][0])
+        if args.verbose:
+            print("INFO: Read %d scores for target %s from %s" % (tmpdf.shape[0], 
+                                                                  tmpdf["target"][0],
+                                                                  scorefile))
+        df = pd.concat([df, tmpdf])
+    df = df.reset_index(drop=True)
+    df = df[df["pam_edit_or_snp"] == False]
+
+    # now all scores have been read in
+    scorecol = "target_score"
+    synmedian = df[df["Consequence"] == "synonymous_variant"][scorecol].median()
+    nonmedian = df[df["Consequence"] == "stop_gained"][scorecol].median()
+    if args.verbose:
+        print("INFO: Pre-scaled global median synonymous score=%f" % (synmedian))
+        print("INFO: Pre-scaled global median nonsense score=%f" % (nonmedian))
+
+    # now scale the scores for the individual targets
+    globaldist = synmedian - nonmedian
+    for target in targets:
+        targetsynmedian = df[(df["Consequence"] == "synonymous_variant") &
+                       (df["target"] == target)][scorecol].median()
+        targetnonmedian = df[(df["Consequence"] == "stop_gained") &
+                       (df["target"] == target)][scorecol].median()
+        if args.verbose:
+            print("INFO: Pre-scaled target %s median synonymous score=%f" % (target, targetsynmedian))
+            print("INFO: Pre-scaled target %s median nonsense score=%f" % (target, targetnonmedian))
+        
+        targetdist = targetsynmedian - targetnonmedian
+        distratio = targetdist / globaldist
+        scaledsynmedian = targetsynmedian * 1.0 / distratio
+        locationshift = scaledsynmedian - synmedian
+        if args.verbose:
+            print("INFO: distance ratio=%f for %s" % (distratio, target))
+        df.loc[(df["target"] == target), resultcol] = df[scorecol] * 1.0 / distratio - locationshift
+        targetsynmedian = df[(df["Consequence"] == "synonymous_variant") &
+                       (df["target"] == target)][resultcol].median()
+        targetnonmedian = df[(df["Consequence"] == "stop_gained") &
+                       (df["target"] == target)][resultcol].median()
+        if args.verbose:
+            print("INFO: Post-scaled target %s median synonymous score=%f" % (target, targetsynmedian))
+            print("INFO: Post-scaled target %s median nonsense score=%f" % (target, targetnonmedian))
+        
+    synmedian = df[df["Consequence"] == "synonymous_variant"][resultcol].median()
+    nonmedian = df[df["Consequence"] == "stop_gained"][resultcol].median()
+    if args.verbose:
+        print("INFO: Post-scaled global median synonymous score=%f" % (synmedian))
+        print("INFO: Post-scaled global median nonsense score=%f" % (nonmedian))
+
+    return df
+
+
+def collapseScores(df):
+    df['snv_score'] = df.groupby(["chrom", "pos", "allele"])["scaled_snv_score"].transform(lambda x: x.median())
+    df = df.drop_duplicates(subset=["chrom", "pos", "allele"])
+    return df
+
+
+def quasiMinMax(df):
+    synmed = df[(df["Consequence"] == "synonymous_variant")]["snv_score"].median() 
+    nonmed = df[(df["Consequence"] == "stop_gained")]["snv_score"].median()
+    df["snv_score_minmax"] = ((df["snv_score"] - nonmed) / (synmed - nonmed))
+    return df
+
+
+def saveSNVScores(args, df):
+    outfile = args.output
+    df.to_csv(outfile, index=False, sep="\t")
+    if args.verbose:
+        print("INFO: wrote SNV scores to %s" % outfile)
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser('combine and normalize SNV scores across a gene')
+    parser.add_argument('scorefiles', metavar='snv scorefiles', nargs='+',
+                    help='path to two or more score files corresponding to different targets')
+    parser.add_argument('-o', '--output', required=True,
+                        help="Path to output file of scores")    
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    args = parser.parse_args()
+
+    if len(args.scorefiles) < 2:
+        sys.stderr.write("ERROR: Must supply at least two score files\n")
+        sys.exit(-99)
+
+    # main workflow
+    df = normalizeSNVscores(args)
+    df = collapseScores(df)
+    df = quasiMinMax(df)
+    saveSNVScores(args, df)
+
+
+    return 0
+
+
+if __name__ == '__main__':
+    main()
+    
