@@ -35,6 +35,11 @@ def process_snv_read(target, args, readobj):
     for (read_offset, ref_offset, ref_base) in apairs:
         if target.ampstartpos + ref_offset in target.skip_pos:
             continue
+
+        if target.ampstartpos + read_offset < target.editstartpos \
+            or target.ampstartpos + read_offset > target.editendpos:
+            continue
+
         if ref_base.islower(): # lowercase means a mismatch between ref and read
             local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[ref_offset]
     if args.verbose:
@@ -73,6 +78,95 @@ def process_snv_read(target, args, readobj):
     return USEFUL_SNV_READ
 
 
+def handle_homopolymers(target, args, readobj):
+    '''process a read that may contain homopolymer errors
+    
+    '''
+    if args.verbose:
+        print("found read with homopolymer cigar: %s" % readobj.cigarstring)
+
+    # gather all differences between the amplicon and the reference
+    apairs = readobj.get_aligned_pairs(with_seq=True)
+    local_edits = {}
+    
+    in_homopolymer = False
+    delbases = []
+
+    last_offset = 0
+    for (read_offset, ref_offset, ref_base) in apairs:
+        if ref_offset is None:
+            ref_offset = last_offset
+        else:
+            last_offset = ref_offset
+
+        if ref_base is not None and ref_base.islower(): # lowercase means a mismatch between ref and read
+            try:
+                local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[read_offset]
+            except IndexError:
+                continue
+        if read_offset is None:
+            # there is a query deletion
+            if ref_offset in target.homopolymer_pos:  # the position is a known homopolymer
+                delbases.append(target.ampstartpos + ref_offset)
+                if args.verbose:
+                    print("DEL: read offset is None, in homopolymer tract at pos %d" % ref_offset)
+                continue
+            else:
+                if args.verbose:
+                    print("DEL: read offset is None but not in homopolymer tract, pos %d" % ref_offset)
+                return BAD_CIGAR
+            
+        elif ref_offset is None:
+            # there is a query insertion
+            if last_offset in target.homopolymer_pos:  # the position is a known homopolymer
+                if args.verbose:
+                    print("INS: ref offset is None, in homopolymer tract at pos %d" % read_offset)
+                continue
+            else:
+                if args.verbose:
+                    print("INS: ref offset is None, but not in homopolymer tract at pos %d" % ref_offset)
+                return BAD_CIGAR
+
+    if args.verbose:
+            print("INFO: local edits:", local_edits)
+
+    if len(local_edits) == 0:  # no SNVs found
+        return WT_READ    
+
+    # now make sure the required edits are present
+    ok = True
+    for k in target.required_edits.keys():
+        if k in local_edits and local_edits[k] == target.required_edits[k]:
+            del local_edits[k]
+        elif k in delbases:
+            pass
+        else:
+            ok = False
+            # required edit is missing
+            if args.verbose:
+                print("INFO: required edit at position %d missing" % k)
+            break
+    if not ok:
+        return MISSING_REQ_EDIT
+    
+    if len(local_edits) > 1:
+        if args.verbose:
+            print("INFO: too many edits remaining")
+        return TOO_MANY_SNVS
+    
+    if len(local_edits) == 0:
+        return NO_SNV_FOUND
+    
+    # only one edit remaining, so add it to the df
+    for pos, base in local_edits.items():
+        if pos not in edits_by_pos:
+            break
+        if args.verbose:
+            print("SUCCESS: found allele %s at pos %d in homopolymer read" % (base, pos))
+        edits_by_pos[pos][base] += 1
+    return USEFUL_SNV_READ
+
+
 def process_del_read(target, args, readobj):
     '''process a read to identify a 3bp deletion, check for the presence of the 
     expected edits, and update the counts table for the identified deletion
@@ -90,8 +184,8 @@ def process_del_read(target, args, readobj):
             # we are now past the deletion
             in_deletion = False
             
-        if target.ampstartpos + ref_offset in target.skip_pos:
-            continue
+        #if target.ampstartpos + ref_offset in target.skip_pos:
+        #    continue
         if ref_base.islower(): # lowercase means a mismatch between ref and read
             try:
                 local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[read_offset]
@@ -128,6 +222,31 @@ def process_del_read(target, args, readobj):
     return USEFUL_DEL_READ
 
 
+def is_valid_homopolymer_cigar(cigarstats):
+    '''check to see if the cigar matches what we think a valid
+    homopolymer-error-containing read should look like
+    
+    * no more than one insertion or deletion
+    * no more than 2 bp of slippage
+
+    the argument is the object returned from record.get_cigar_stats()
+    '''
+    # is there a single deletion and does it have no more than 2 positions deleted?
+    if cigarstats[1][2] == 1 and cigarstats[0][2] <= 2:
+        # there is a single deletion and it has 3 pos deleted, good!
+        # now make sure there's no other crap
+        if cigarstats[1][1] == 0 and cigarstats[1][3] == 0 \
+            and cigarstats[1][4] == 0 and cigarstats[1][5] == 0:
+            return True
+    
+    # is there a single insertion and does it have not more than 2 postitions inserted?  
+    elif cigarstats[1][1] == 1 and cigarstats[0][1] <= 2:
+        if cigarstats[1][2] == 0 and cigarstats[1][3] == 0 \
+            and cigarstats[1][4] == 0 and cigarstats[1][5] == 0:
+            return True
+    return False
+    
+
 def is_valid_del_cigar(cigarstats):
     '''check to see if the cigar matches what we think a valid 
     deletion-containing cigar should look like
@@ -142,6 +261,7 @@ def is_valid_del_cigar(cigarstats):
             and cigarstats[1][4] == 0 and cigarstats[1][5] == 0:
             return True
     return False
+
 
 
 def processInputFile(target, args,
@@ -174,12 +294,15 @@ def processInputFile(target, args,
             readstats['total_reads'] += 1
 
             result = BAD_CIGAR
+            cigarstats = record.get_cigar_stats()
+
             if snvs_mode:
                 if record.cigarstring == target.cigar:
                     result = process_snv_read(target, args, record)
+                elif target.homopolymer_pos and is_valid_homopolymer_cigar(cigarstats):
+                    result = handle_homopolymers(target, args, record)
 
-            if dels_mode:
-                cigarstats = record.get_cigar_stats()
+            if dels_mode and result == BAD_CIGAR:
                 if is_valid_del_cigar(cigarstats):
                     result = process_del_read(target, args, record)
 
@@ -312,7 +435,7 @@ def main():
 
     if args.verbose:
         print("INFO: creating empty counts matrix with %d positions" % (
-            target.ampendpos - target.startpos + 1))
+            target.editendpos - target.editstartpos + 1))
 
     for x in range(target.editstartpos, target.editendpos + 1, 1):
         edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}

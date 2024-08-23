@@ -2,6 +2,7 @@ import string
 import pandas as pd
 import pysam
 import glob
+import re
 
 class Target:
 
@@ -36,7 +37,8 @@ class Target:
         self.cigar = targetdf.loc[targetdf["target"] == targetname, "cigar"].values[0]
         
         self.refdf = self.getReferenceSequence()
-    
+        self.homopolymer_pos = self.findHomopolymers()
+
     def getRequiredEdits(self, targetdf):
         required_edits = {}
         editstring = targetdf.loc[targetdf["target"] == self.targetname, "required_edits"].values[0]
@@ -74,6 +76,23 @@ class Target:
                 columns=["pos", "ref"])
         return refdf
 
+
+    def findHomopolymers(self, min_length=4):
+        '''find all positions within the reference sequence that comprise homopolymer runs with 
+        length at least <min_length> bases, and return a list of offsets of such positions
+        '''
+        if self.refdf.empty:
+            return []
+        poslist = []
+        refseq = ''.join(self.refdf["ref"].to_list())
+        for base in ("A", "C", "G", "T"):
+            groups = re.finditer(r'%s{%d,}' % (base, min_length), refseq)
+            for g in groups:
+                for pos in range(g.start(), g.end(), 1):
+                    poslist.append(pos)
+        return poslist
+
+        
  
     def getSNVSampleList(self, countsdir, include_neg=False):
         '''performs a directory lookup of all SNV counts files matching a 
