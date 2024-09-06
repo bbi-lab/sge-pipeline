@@ -1,0 +1,2 @@
+target	chrom	editstart	editstop	ampstart	ampstop	required_edits	cigar	skip_pos
+RUNX1_X5F	chr21	34880555	34880596	34880520	34880753	34880570G,34880573A	234M
