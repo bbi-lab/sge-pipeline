@@ -184,8 +184,8 @@ def process_del_read(target, args, readobj):
             # we are now past the deletion
             in_deletion = False
             
-        #if target.ampstartpos + ref_offset in target.skip_pos:
-        #    continue
+        if target.ampstartpos + ref_offset in target.skip_pos:
+            continue
         if ref_base.islower(): # lowercase means a mismatch between ref and read
             try:
                 local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[read_offset]
