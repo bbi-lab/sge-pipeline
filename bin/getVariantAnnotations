@@ -45,6 +45,7 @@ def writeDelVCF(target, args):
                 refallele = refseq[index:index+4]
             except IndexError:
                 continue
+            if not len(refallele) == 4: continue
             altallele = refbase
             outline = f"{target.chrom}\t{target.ampstartpos + index}\t.\t{refallele}\t{altallele}\t.\tPASS\t.\n"
             outvcf.write(outline)
