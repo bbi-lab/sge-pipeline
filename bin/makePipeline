@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 
 import argparse
-import os.path
+import os
 import sys
+
+from contextlib import nullcontext
+
 
 def main():
     parser = argparse.ArgumentParser('Build scripts to run SGE pipeline')
-    parser.add_argument('-s', '--samplelist', required=True, help='Path to list of input fastq files')
-    parser.add_argument('-o', '--outfile', required=True, help="Path to output file")
-    parser.add_argument('-n', '--concurrency', type=int, default=8, help="Number of concurrent jobs")
+    parser.add_argument('-s', '--samplelist', required=True, help='List of input fastq files')
+    parser.add_argument('-o', '--outfile', required=False, help="Path to output file (def. stdout)")
+    parser.add_argument('-n', '--concurrency', type=int, default=8, help="Number of concurrent jobs (def. 8)")
     parser.add_argument('-f', '--fastqdir', required=False, default="/net/bbi/vol1/data/sge-seq/nobackup/merged/",
                         help="Directory for merged fastq file output. Gene-specific subdirectories will be appended automatically")
     parser.add_argument('-b', '--bamdir', required=False, default="/net/bbi/vol1/data/sge-analysis/nobackup/bam/",
@@ -16,44 +19,50 @@ def main():
     parser.add_argument('-c', '--countsdir', required=False, default="/net/bbi/vol1/data/sge-analysis/nobackup/counts/",
                         help="Directory for counts output. Gene-specific subdirectories will be appended automatically")
     
-    
     parser.add_argument('--verbose', required=False, default=False,
                         action="store_true", help="Turn on verbose output")
 
     args = parser.parse_args()
 
+    mygenes = set()
     nsamples = 0
-    with open(args.samplelist) as infile:
+    samplelist = args.samplelist
+    with open(samplelist) as infile:
         for line in infile:
             nsamples += 1
-
+            gene = line.split("\t")[0]
+            mygenes.add(gene)
+            
     if args.concurrency > 0:
         concurrency = args.concurrency
     else:
         concurrency = 8
 
     fastqdir = args.fastqdir
-    if not fastqdir or not os.path.exists(fastqdir):
-        sys.stderr.write("ERROR: please ensure merged fastq output dir %s exists and is writeable\n" % fastqdir)
-        sys.exit(-99)
     if fastqdir[-1] == '/': fastqdir = fastqdir[:-1]
-
     countsdir = args.countsdir
-    if not countsdir or not os.path.exists(countsdir):
-        sys.stderr.write("ERROR: please ensure counts output dir %s exists and is writeable\n" % countsdir)
-        sys.exit(-99)
     if countsdir[-1] == '/': countsdir = countsdir[:-1]
-
     bamdir = args.bamdir
-    if not bamdir or not os.path.exists(bamdir):
-        sys.stderr.write("ERROR: please ensure BAM output dir %s exists and is writeable\n" % bamdir)
-        sys.exit(-99)
     if bamdir[-1] == '/': bamdir = bamdir[:-1]
-    
-    
-        
-    samplelist = args.samplelist
-    with open(args.outfile, 'w') as outfile:
+
+    # create any missing output directories
+    for mydir in (fastqdir, countsdir, bamdir):
+        if not mydir:
+            sys.stderr.write("ERROR: please provide fastq, bam, and counts directories\n" % fastqdir)
+            sys.exit(-99)
+        if not os.path.isdir(mydir):
+            os.mkdir(mydir)
+            os.chmod(mydir, 0o775)
+            sys.stderr.write("INFO: created directory %s\n" % mydir)
+            
+        for gene in mygenes:
+            if not os.path.isdir(os.path.join(mydir, gene)):
+                os.mkdir(os.path.join(mydir, gene))
+                os.chmod(os.path.join(mydir, gene), 0o775)
+                sys.stderr.write("INFO: created directory %s\n" % os.path.join(mydir, gene))
+
+
+    with open(args.outfile, "w") if args.outfile else nullcontext(sys.stdout) as outfh:
         to_write = '''\
 #!/bin/bash
 #$ -S /bin/bash
@@ -128,7 +137,7 @@ samtools depth -a -H -o ${{COUNTSDIR}}/${{BASENAME}}.depth.tsv ${{BAMDIR}}/${{OU
            fastqdir=fastqdir,
            bamdir=bamdir,
            countsdir=countsdir)
-        outfile.write(to_write)
+        outfh.write(to_write)
     return
     
 
