@@ -300,7 +300,9 @@ def scoreSNVs(target, args, qcfails):
 
     # annotate with vep preditions
     vepdf = sge_util.getVEPdf(args.snvvepfile)
-    df = df.merge(vepdf[["pos", "allele", "Consequence"]], 
+    #df = df.merge(vepdf[["pos", "allele", "Consequence"]],
+    df = df.merge(vepdf[["pos", "allele", "Consequence",
+                         "cDNA_position", "CDS_position", "Protein_position", "Amino_acids"]],
                   on=["pos", "allele"])
     df['Consequence'] = df['Consequence'].map(lambda x: x.split(",")[0])
 
@@ -411,14 +413,12 @@ def normalizeSNVscores(target, args, df):
         df[newcolname] = locatedcol        
         newcols.append(newcolname)
     df["target_score"] = df[newcols].median(axis=1)
-    keepcols = ["target", "chrom", "pos", "allele", "gene", "ref", "pos_id", "Consequence"]
+    keepcols = ["target", "chrom", "pos", "allele", "gene", "ref", "pos_id", "Consequence",
+                "cDNA_position", "CDS_position", "Protein_position", "Amino_acids"]
     for n in newcols:
         keepcols.append(n)
     keepcols.append("target_score")
     return df[keepcols]
-
-
-#target  chrom   pos     allele  snvlib_count    gene    snvlib_freq     D05_R1R4        D05_R1R4_freq   D05_R2R5        D05_R2R5_freq   D13_R1R4        D13_R1R4_freq    D13_R2R5        D13_R2R5_freq   ref     pos_id  pam_edit_or_snp Consequence     D05_R1R4_over_lib       D05_R1R4_over_lib_log2  D05_R2R5_over_lib        D05_R2R5_over_lib_log2  D13_R1R4_over_lib       D13_R1R4_over_lib_log2  D13_R2R5_over_lib       D13_R2R5_over_lib_log2  D13_R1R4_over_D05_R1R4   D13_R1R4_over_D05_R1R4_log2     D13_R2R5_over_D05_R2R5  D13_R2R5_over_D05_R2R5_log2     D05_R1R4_over_lib_loess D13_R1R4_loess_adjust   D05_R2R5_over_lib_loess  D13_R2R5_loess_adjust   R1_score        R2_score        target_score
 
 
 def saveSNVScores(args, scoredf):
