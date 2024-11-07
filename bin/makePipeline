@@ -19,14 +19,11 @@ def main():
     parser.add_argument('-c', '--countsdir', required=False, default="/net/bbi/vol1/data/sge-analysis/nobackup/counts/",
                         help="Directory for counts output. Gene-specific subdirectories will be appended automatically")
     
-    parser.add_argument('--verbose', required=False, default=False,
-                        action="store_true", help="Turn on verbose output")
-
     args = parser.parse_args()
 
     mygenes = set()
     nsamples = 0
-    samplelist = args.samplelist
+    samplelist = os.path.abspath(args.samplelist)
     with open(samplelist) as infile:
         for line in infile:
             nsamples += 1
@@ -45,13 +42,17 @@ def main():
     bamdir = args.bamdir
     if bamdir[-1] == '/': bamdir = bamdir[:-1]
 
+    fastqdir = os.path.abspath(fastqdir)
+    countsdir = os.path.abspath(countsdir)
+    bamdir = os.path.abspath(bamdir)
+    
     # create any missing output directories
     for mydir in (fastqdir, countsdir, bamdir):
         if not mydir:
             sys.stderr.write("ERROR: please provide fastq, bam, and counts directories\n" % fastqdir)
             sys.exit(-99)
         if not os.path.isdir(mydir):
-            os.mkdir(mydir)
+            os.makedirs(mydir, exist_ok=True)
             os.chmod(mydir, 0o775)
             sys.stderr.write("INFO: created directory %s\n" % mydir)
             
@@ -70,6 +71,8 @@ def main():
 #$ -P shendure_bbi
 #$ -N sge_pipe
 #$ -t 1-{nsamples}
+#$ -l mfree=4G
+#$ -l h_rt=2:0:0
 #$ -tc {concurrency}
 #$ -e /net/bbi/vol1/data/sge-analysis/work/sge_logs/
 #$ -o /net/bbi/vol1/data/sge-analysis/work/sge_logs/
@@ -138,6 +141,9 @@ samtools depth -a -H -o ${{COUNTSDIR}}/${{BASENAME}}.depth.tsv ${{BAMDIR}}/${{OU
            bamdir=bamdir,
            countsdir=countsdir)
         outfh.write(to_write)
+
+    if args.outfile:
+        sys.stderr.write("Wrote pipeline to %s\n" % args.outfile)
     return
     
 
