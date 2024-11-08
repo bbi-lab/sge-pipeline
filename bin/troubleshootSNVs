@@ -1,0 +1,223 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+from collections import defaultdict
+
+import pysam
+import numpy as np
+import pandas as pd
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_target
+
+edits_by_pos = {}
+deletion_counts = defaultdict(int)
+
+WT_READ = 1
+MISSING_REQ_EDIT = 2
+TOO_MANY_SNVS = 3
+DEL_READ_WITH_ERRORS = 4
+USEFUL_SNV_READ = 5
+USEFUL_DEL_READ = 6
+BAD_CIGAR = 7
+NO_SNV_FOUND = 8
+
+
+def process_snv_read(target, args, req_edits, readobj):
+    '''process a read to extract all SNVs, check for the presence of the 
+    expected edits, and update the per-variant counts for the identified SNV
+    '''
+    # gather all differences between the amplicon and the reference
+    apairs = readobj.get_aligned_pairs(with_seq=True)
+    local_edits = {}
+        
+    for (read_offset, ref_offset, ref_base) in apairs:
+        if target.ampstartpos + ref_offset in target.skip_pos:
+            continue
+        if ref_base.islower(): # lowercase means a mismatch between ref and read
+            local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[ref_offset]
+    if len(local_edits) == 0:
+        print("INFO: found no mismatches in read, looks wild-type")
+        return WT_READ
+    else:
+        print("INFO: found mismatches in read:", local_edits)
+
+    # now make sure the required edits are present
+    ok = True
+    for k in req_edits.keys():
+        if k in local_edits and local_edits[k] == req_edits[k]:
+            del local_edits[k]
+        else:
+            ok = False
+            # required edit is missing
+            print("INFO: required edit at position %d missing" % k)
+    if not ok:
+        return MISSING_REQ_EDIT
+    
+    if len(local_edits) > 1:
+        print("INFO: too many mismatches remaining after accounting for required edits")
+        print("INFO: remaining mismatches:", local_edits)
+        return TOO_MANY_SNVS
+    
+    if len(local_edits) == 0:
+        print("INFO: No mismatches or edits remaining after accounting for required edits")
+        return NO_SNV_FOUND
+    
+    # only one edit remaining, so add it to the df
+    for pos, base in local_edits.items():
+        if pos not in edits_by_pos:
+            break
+        edits_by_pos[pos][base] += 1
+        print("INFO: Success! Found a single SNV: %d:%s" % (pos, base))
+    return USEFUL_SNV_READ
+
+
+def processInputFile(target, args, req_edits):
+            
+    '''process a BAM file read by read, identifying SNV- or deletion-containing
+    reads, and extract statistics
+
+    '''
+    if args.maxreads < 1:
+        maxreads = np.Inf
+    else:
+        maxreads = args.maxreads
+    
+    # dict to hold statistics to output later
+    readstats = {'total_reads': 0,
+                 'bad_cigar': 0,
+                 'wild_type': 0,
+                 'missing_req_edit': 0,
+                 'too_many_snvs': 0,
+                 'del_plus_errors': 0,
+                 'no_snv_edit': 0,
+                 'snv_reads': 0,
+                 'deletion_reads': 0,
+    }
+    
+    with pysam.AlignmentFile(args.inputbam) as infile:
+        for record in infile:
+            if readstats['total_reads'] >= maxreads:
+                break
+            readstats['total_reads'] += 1
+
+            print(" ------------ Next read ------------")
+            result = BAD_CIGAR
+            if record.cigarstring == target.cigar:
+                result = process_snv_read(target, args, req_edits, record)
+            else:
+                print("INFO: Wrong CIGAR string: expected %s, found %s" % (target.cigar, record.cigarstring))
+            if result == BAD_CIGAR:
+                readstats["bad_cigar"] += 1
+            elif result == WT_READ:
+                readstats["wild_type"] += 1
+            elif result == MISSING_REQ_EDIT:
+                readstats["missing_req_edit"] += 1
+            elif result == TOO_MANY_SNVS:
+                readstats["too_many_snvs"] += 1
+            elif result == DEL_READ_WITH_ERRORS:
+                readstats["del_plus_errors"] += 1
+            elif result == NO_SNV_FOUND:
+                readstats["no_snv_edit"] += 1
+            elif result == USEFUL_SNV_READ:
+                readstats["snv_reads"] += 1
+            elif result == USEFUL_DEL_READ:
+                readstats["deletion_reads"] += 1
+            else:
+                print("uh oh", result)
+
+    return readstats
+
+    
+def writeSNVOutputFile(target, args):
+    '''write the file with SNV counts
+
+    '''
+    chroms = []
+    poses = []
+    alleles = []
+    counts = []
+    for pos, basedict in edits_by_pos.items():
+        for base, count in basedict.items():
+            chroms.append(target.chrom)
+            poses.append(pos)
+            alleles.append(base)
+            counts.append(count)
+    sampleids = [args.sampleid] * len(poses)
+    targetnames = [target.targetname] * len(poses)
+    df = pd.DataFrame({'sampleid': sampleids,
+                       'target': targetnames,
+                       'chrom': chroms,
+                       'pos': poses,
+                       'allele': alleles,
+                       'count': counts
+                   })
+    df.to_csv(args.snvs, sep="\t", index=False)
+    return
+
+
+def printStats(readstats):
+    print("\nSummary Statistics:")
+    print("Total reads examined:           %d" % readstats["total_reads"])
+    print("Total with bad cigar:           %d (%.2f%%)" % (readstats["bad_cigar"], readstats["bad_cigar"] / readstats["total_reads"] * 100.0))
+    print("Total wild-type:                %d (%.2f%%)" % (readstats["wild_type"], readstats["wild_type"] / readstats["total_reads"] * 100.0))
+    print("Total missing req edit:         %d (%.2f%%)" % (readstats["missing_req_edit"], readstats["missing_req_edit"] / readstats["total_reads"] * 100.0))
+    print("Total with too many mismatches: %d (%.2f%%)" % (readstats["too_many_snvs"], readstats["too_many_snvs"] / readstats["total_reads"] * 100.0))
+    print("Total with no random SNV:       %d (%.2f%%)" % (readstats["no_snv_edit"], readstats["no_snv_edit"] / readstats["total_reads"] * 100.0))
+    print("Total good SNV reads:           %d (%.2f%%)" % (readstats["snv_reads"], readstats["snv_reads"] / readstats["total_reads"] * 100.0))
+    return
+
+    
+
+def main():
+    parser = argparse.ArgumentParser('troubleshoot issues with SNV counts')
+    parser.add_argument('-n', '--targetname', required=True,
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=True, 
+                        help="File containing list of targets and expected edits")
+    parser.add_argument('-s', '--snvs', required=False, default="", 
+                        help="output SNV counts to <file>")
+    parser.add_argument('-l', '--sampleid', required=False, default="unspecified",
+                        help="Sample identifer (replicate, timepoint)")
+    parser.add_argument('-m', '--maxreads', type=int, default=0, 
+                        help='Maximum number of reads to processs')
+    parser.add_argument('-r', '--requirededits', type=str, default='',
+                        help="Comma-separated list of required edits (overrides target file)")
+    parser.add_argument('inputbam',
+                        help="Path to input BAM file")
+    args = parser.parse_args()
+    
+    
+    # create Target instance for the specific target name we specified
+    target = sge_target.Target(args.targetname, args.targetfile)
+
+    req_edits = {}
+    if args.requirededits:
+        # user specified required edits
+        try:
+            tedits = args.requirededits.split(",")
+            for edit in tedits:
+                pos = int(edit[:-1])
+                base = edit[-1]
+                req_edits[pos] = base
+        except:
+            sys.stderr.write("ERROR: Unable to parse required edits: %s\n" % args.requirededits)
+            sys.stderr.write("Please specify required edits as comma-separated list, e.g. 1234A,2345T,...\n")
+            sys.exit(-99)
+    else:
+        req_edits = target.required_edits
+                
+    for x in range(target.editstartpos, target.editendpos + 1, 1):
+        edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
+    
+    readstats = processInputFile(target, args, req_edits)
+    printStats(readstats)
+    writeSNVOutputFile(target, args)
+    return
+
+
+if __name__ == '__main__':
+    main()
+    
+
