@@ -199,19 +199,21 @@ def main():
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=True, 
-                        help="File containing list of targets and expected edits")
+                        help="File containing list of DNA targets and expected edits")
+    parser.add_argument('-r', '--rnatargetfile', required=True,
+                        help='File containing the list of RNA targets')
     parser.add_argument('-c', '--counts', required=False, default="", 
                         help="output variant counts to <file>")
     parser.add_argument('-l', '--sampleid', required=False, default="unspecified",
                         help="Sample identifer (replicate, timepoint)")
     parser.add_argument('-m', '--maxreads', type=int, default=0, 
                         help='Maximum number of reads to processs')
-    parser.add_argument('-r', '--requirededits', type=str, default='',
+    parser.add_argument('-R', '--requirededits', type=str, default='',
                         help="Comma-separated list of required edits (overrides target file)")
-    parser.add_argument('-C', '--cigar', help="CIGAR string to look for",
+    parser.add_argument('-C', '--cigar', help="CIGAR string to look for (overrides target file)",
                         default="", required=False)
-    parser.add_argument('-F', '--cigarfile', help="Read top CIGAR string from <cigarfile>",
-                        default="", required=False)
+    #parser.add_argument('-F', '--cigarfile', help="Read top CIGAR string from <cigarfile>",
+    #                    default="", required=False)
     parser.add_argument('-v', '--verbose', help="Turn on verbose output",
                         default=False, action="store_true")
     parser.add_argument('inputbam',
@@ -221,8 +223,27 @@ def main():
     # create Target instance for the specific target name we specified
     target = sge_target.Target(args.targetname, args.targetfile)
 
+
+    rnatargetdf = pd.read_csv(args.rnatargetfile, header=0,
+                              sep="\t", dtype={'rnastartpos': 'Int64',
+                                               'rnaendpos': 'Int64'})
+
+    # extract the features from the RNA target dataframe
+    rnastartpos = rnatargetdf.loc[rnatargetdf["target"] == args.targetname, "rnastartpos"].values[0]
+    rnaendpos = rnatargetdf.loc[rnatargetdf["target"] == args.targetname, "rnaendpos"].values[0]
+    print(rnastartpos, rnaendpos)
     req_edits = {}
+    editstring = rnatargetdf.loc[rnatargetdf["target"] == args.targetname, "required_edits"].values[0]
+    tedits = editstring.split(",")
+    for edit in tedits:
+        pos = int(edit[:-1])
+        base = edit[-1]
+        req_edits[pos] = base
+
+    cigar = rnatargetdf.loc[rnatargetdf["target"] == args.targetname, "cigar"].values[0]
+
     if args.requirededits:
+        req_edits = {}
         # user specified required edits
         try:
             tedits = args.requirededits.split(",")
@@ -234,27 +255,25 @@ def main():
             sys.stderr.write("ERROR: Unable to parse required edits: %s\n" % args.requirededits)
             sys.stderr.write("Please specify required edits as comma-separated list, e.g. 1234A,2345T,...\n")
             sys.exit(-99)
-    else:
-        req_edits = target.required_edits
 
-    cigar = ""
-    if args.cigarfile:
-        try:
-            with open(args.cigarfile) as cin:
-                cigar = cin.readline().lstrip().strip().split(" ")[1]
-                sys.stderr.write("INFO: Read cigar string %s from %s\n" % (cigar, args.cigarfile))
-        except:
-            sys.stderr.write("ERROR: Unable to read cigar string from %s\n" % (args.cigarfile))
+    #cigar = ""
+    #if args.cigarfile:
+    #    try:
+    #        with open(args.cigarfile) as cin:
+    #            cigar = cin.readline().lstrip().strip().split(" ")[1]
+    #            sys.stderr.write("INFO: Read cigar string %s from %s\n" % (cigar, args.cigarfile))
+    #    except:
+    #        sys.stderr.write("ERROR: Unable to read cigar string from %s\n" % (args.cigarfile))
             
-    else:
-        if args.cigar:
-            cigar = args.cigar
-            sys.stderr.write("INFO: Read cigar string %s from command line\n" % (cigar))
-    if not cigar:
-        sys.stderr.write("ERROR: Please specify a cigar string with -C or -F\n")
-        sys.exit(-99)
+    #else:
+    if args.cigar:
+        cigar = args.cigar
+        sys.stderr.write("INFO: Read cigar string %s from command line\n" % (cigar))
+    #if not cigar:
+    #    sys.stderr.write("ERROR: Please specify a cigar string with -C or -F\n")
+    #    sys.exit(-99)
         
-    for x in range(target.editstartpos, target.editendpos + 1, 1):
+    for x in range(rnastartpos, rnaendpos + 1, 1):
         edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
     
     readstats = processInputFile(target, args, req_edits, cigar)

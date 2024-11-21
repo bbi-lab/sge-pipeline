@@ -6,7 +6,6 @@ import sys
 
 from contextlib import nullcontext
 
-
 def main():
     parser = argparse.ArgumentParser('Build scripts to run SGE pipeline for RNA')
     parser.add_argument('-s', '--samplelist', required=True, help='List of input fastq files -- see docs for format')
@@ -125,21 +124,20 @@ bwa mem ${{FAFILE}} ${{FQDIR}}/${{FQ_NO_N_FILE}} | samtools sort -o ${{BAMDIR}}/
 samtools index ${{BAMDIR}}/${{OUTBAM}}
 
 # find the top cigar string and write it to a file
-samtools view ${{BAMDIR}}/${{OUTBAM}} | \
-  cut -f 6 | \
-  head -100000 | \
-  sort | \
-  uniq -c | \
-  sort -n | \
-  tail -1 > {{BAMDIR}}/${{OUTBAM}}.topcigar.txt
+samtools view ${{BAMDIR}}/${{OUTBAM}} | \\
+  cut -f 6 | \\
+  head -100000 | \\
+  sort | \\
+  uniq -c | \\
+  sort -n | \\
+  tail -1 > ${{BAMDIR}}/${{OUTBAM}}.topcigar.txt
 
 # counting
 /net/bbi/vol1/data/sge-analysis/bin/generateRNACounts \\
   -n ${{GENENAME}}_${{EXONNAME}} \\
-  -t ${{ETCDIR}}/RNA.targets.tsv \\
-  -F {{BAMDIR}}/${{OUTBAM}}.topcigar.txt \\
+  -t ${{ETCDIR}}/targets.tsv \\
+  -r ${{ETCDIR}}/targets.rna.tsv \\
   -c ${{COUNTSDIR}}/${{BASENAME}}.rnacounts.tsv \\
-  #-S ${{COUNTSDIR}}/${{BASENAME}}.readstats.tsv \\
   -l ${{BASENAME}} \\
   ${{BAMDIR}}/${{OUTBAM}}
     
