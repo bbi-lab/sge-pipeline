@@ -63,6 +63,7 @@ def make_correlation_figure(target, filelist, args):
 
                 # compute SNV correlation
                 mycorr = tmpdf[["count_s1", "count_s2"]].corr().iloc[0,1]
+                sys.stdout.write("Pearson r between %s and %s: %f\n" % (repl1, repl2, mycorr))
                 p = alt.Chart(tmpdf).mark_point().encode(
                     x=alt.X("count_s1:Q", title="%s"% repl1.split("/")[-1].split(".")[0]),
                     y=alt.Y("count_s2:Q", title="%s"% repl2.split("/")[-1].split(".")[0]),
