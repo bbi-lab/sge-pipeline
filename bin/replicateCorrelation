@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+ 
+import sys
+import argparse
+import altair as alt
+import glob
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+
+import sge_util
+import sge_counts
+import sge_altair
+import sge_target
+
+
+def SNVFileList(countsdir, targetname):
+    '''
+    performs a directory lookup of all SNV counts files matching a 
+    specific target name in a 
+    given counts directory, and returns a dictionary of filenames:
+    (string) day --> [ (string) full_filename1, (string) full_filename2, ... ]
+    '''
+    samples = {}
+    if countsdir.endswith("/"):
+        countsdir = countsdir[:-1]
+    for fullfn in glob.glob("%s/%s_*.snvs.tsv" % (countsdir, targetname)):
+        fn = fullfn.split("/")[-1]
+        parts = fn.split(".")[0].split("_")
+        repl = parts[2]
+        if repl == 'NC': # throw out the negative control
+            continue
+        day = parts[3]
+        if day not in samples:
+            samples[day] = []
+        samples[day].append(fullfn)
+    return samples
+
+
+def make_correlation_figure(target, filelist, args):
+    figlist = []
+    rowlens = []
+    days = sorted(filelist.keys())
+    for d in days:
+        repllist = filelist[d]
+        if len(repllist) < 2:
+            if args.verbose:
+                sys.stderr.write("INFO: Only one replicate at %s, nothing to plot\n" % d)
+            continue
+
+        rowlen = 0
+        for index, repl1 in enumerate(repllist):
+            for repl2 in repllist[index+1:]:
+                s1counts = sge_counts.getSNVCounts(repl1, augment=False, pseudocount=0)
+                s2counts = sge_counts.getSNVCounts(repl2, augment=False, pseudocount=0)
+                s1counts = s1counts.rename(columns={'count': 'count_s1'})
+                s2counts = s2counts.rename(columns={'count': 'count_s2'})
+                tmpdf = s1counts.merge(s2counts, on=["chrom", "pos", "allele"])
+                tmpdf = tmpdf[(tmpdf["pos"] >= target.editstartpos) & (tmpdf["pos"] <= target.editendpos)]
+                tmpdf = tmpdf.merge(target.refdf, on="pos")
+                tmpdf = tmpdf[tmpdf["ref"] != tmpdf["allele"]]
+                tmpdf = tmpdf[~tmpdf["pos"].isin(target.required_edits)]
+                tmpdf = tmpdf[~tmpdf["pos"].isin(target.skip_pos)]
+
+                # compute SNV correlation
+                mycorr = tmpdf[["count_s1", "count_s2"]].corr().iloc[0,1]
+                p = alt.Chart(tmpdf).mark_point().encode(
+                    x=alt.X("count_s1:Q", title="%s"% repl1.split("/")[-1].split(".")[0]),
+                    y=alt.Y("count_s2:Q", title="%s"% repl2.split("/")[-1].split(".")[0]),
+
+                )
+                t = alt.Chart({'values':[{}]}).mark_text(
+                    align="left", baseline="top"
+                    ).encode(
+                    x=alt.value(5),  # pixels from left
+                    y=alt.value(5),  # pixels from top
+                    text=alt.value(f"r: {mycorr:.3f}"),
+                )
+                figlist.append(p + t + p.transform_regression("count_s1", "count_s2").mark_line())
+                rowlen += 1
+        rowlens.append(rowlen)
+    
+    firstrow = rowlens[0]
+    if firstrow == 1:
+        layout = (figlist[0])
+    elif firstrow == 3:
+        layout = (figlist[0] | figlist[1] | figlist[2])
+    nextindex = firstrow
+    if len(rowlens) > 1:
+        for r in rowlens[1:]:
+            if r  == 1:
+                newrow = (figlist[nextindex])
+            elif r == 3:
+                newrow = (figlist[nextindex] | figlist[nextindex+1] | figlist[nextindex+2])
+            layout &= newrow
+            nextindex += r
+    return layout.properties(title="Correlation of replicates, %s" % args.targetname
+        ).configure_title(
+            fontSize=20, 
+            offset=5, 
+            orient='top', 
+            anchor='middle'
+        )
+
+
+
+def main():
+    parser = argparse.ArgumentParser('create visualization of replicate counts correlation for SGE target')
+    parser.add_argument('-n', '--targetname', required=True,
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=False, 
+                        help="File containing list of targets and expected edits (can be auto-detected)",
+                        default="")
+    parser.add_argument('-c', '--countsdir', required=True, default="", 
+                        help="Directory containing the counts files")
+    parser.add_argument('-o', '--outfile', required=True,
+                        help="Filename for output figure (should end in .png)")
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    args = parser.parse_args()
+
+    if not args.targetfile:
+        targetfile = sge_util.guess_target_file(args.targetname)
+        if not targetfile:
+            sys.stderr.write("ERROR: Can't find a target file to use, please specify with -t\n")
+            sys.exit(-99)
+    else:
+        targetfile = args.targetfile
+
+    target = sge_target.Target(args.targetname, targetfile)
+
+    filelist = SNVFileList(args.countsdir, args.targetname)
+    if args.verbose:
+        days = sorted(filelist.keys())
+        sys.stderr.write("INFO: found %d timepoints for %s in %s: %s\n" % (len(filelist.keys()), 
+                                                                        args.targetname,
+                                                                        args.countsdir,
+                                                                        ', '.join(days)
+                                                                        ))
+        for d in days:
+            sys.stderr.write("INFO: files for timepoint %s\n" % d)
+            for f in filelist[d]:
+                sys.stderr.write("  %s\n" % f)
+
+    fig = make_correlation_figure(target, filelist, args)
+    if args.verbose:
+        sys.stderr.write("INFO: saving figure to %s\n" % args.outfile)
+
+    fig.save(args.outfile)
+
+    return 0
+
+
+if __name__ == '__main__':
+    main()
+    
