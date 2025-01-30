@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import pysam
 import glob
+import os
 
 import sge_counts
 import sge_target
@@ -74,3 +75,15 @@ def getVEPdf(vepfile, type="snv"):
         return None
     return vepdf
 
+
+
+def guess_target_file(targetname):
+    try:
+        genename = targetname.split("_")[0]
+        if os.path.exists('/net/bbi/vol1/data/sge-analysis/etc/%s/targets.tsv' % genename):
+            return '/net/bbi/vol1/data/sge-analysis/etc/%s/targets.tsv' % genename
+        else:
+            return None
+    except:
+        return None
+    
