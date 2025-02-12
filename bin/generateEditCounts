@@ -101,6 +101,8 @@ def handle_homopolymers(target, args, readobj):
 
         if ref_base is not None and ref_base.islower(): # lowercase means a mismatch between ref and read
             try:
+                if target.ampstartpos + ref_offset in target.skip_pos:
+                    continue
                 local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[read_offset]
             except IndexError:
                 continue
@@ -186,6 +188,12 @@ def process_del_read(target, args, readobj):
             
         if target.ampstartpos + ref_offset in target.skip_pos:
             continue
+
+        # added mwsnyder 20241030
+        if target.ampstartpos + ref_offset < target.editstartpos \
+            or target.ampstartpos + ref_offset > target.editendpos:
+            continue
+
         if ref_base.islower(): # lowercase means a mismatch between ref and read
             try:
                 local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[read_offset]
@@ -214,10 +222,19 @@ def process_del_read(target, args, readobj):
 
     if len(local_edits) > 0:
         # if there are any mismatches left, then we have errors and we throw the read out
+        print(local_edits)
         return DEL_READ_WITH_ERRORS
 
     # we have a good deletion!
-    delstring = str(delbases[0]) + "-" + str(delbases[2])
+    try:
+        delstring = str(delbases[0]) + "-" + str(delbases[2])
+    except IndexError:
+        try:
+            delstring = str(delbases[0]) + "-" + str(delbases[0] + 2)
+        except:
+            sys.stderr.write("found error with deletion, can't process\n")
+            return DEL_READ_WITH_ERRORS
+            
     deletion_counts[delstring] += 1
     return USEFUL_DEL_READ
 

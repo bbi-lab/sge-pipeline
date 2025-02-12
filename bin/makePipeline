@@ -2,30 +2,68 @@
 
 import argparse
 import os
+import sys
+
+from contextlib import nullcontext
 
 
 def main():
     parser = argparse.ArgumentParser('Build scripts to run SGE pipeline')
-    parser.add_argument('-s', '--samplelist', required=True, help='Path to list of input fastq files')
-    parser.add_argument('-o', '--outfile', required=True, help="Path to output file")
-    parser.add_argument('-c', '--concurrency', type=int, default=8, help="Number of concurrent jobs")
-    parser.add_argument('--verbose', required=False, default=False,
-                        action="store_true", help="Turn on verbose output")
-
+    parser.add_argument('-s', '--samplelist', required=True, help='List of input fastq files')
+    parser.add_argument('-o', '--outfile', required=False, help="Path to output file (def. stdout)")
+    parser.add_argument('-n', '--concurrency', type=int, default=8, help="Number of concurrent jobs (def. 8)")
+    parser.add_argument('-f', '--fastqdir', required=False, default="/net/bbi/vol1/data/sge-seq/nobackup/merged/",
+                        help="Directory for merged fastq file output. Gene-specific subdirectories will be appended automatically")
+    parser.add_argument('-b', '--bamdir', required=False, default="/net/bbi/vol1/data/sge-analysis/nobackup/bam/",
+                        help="Directory for BAM output. Gene-specific subdirectories will be appended automatically")
+    parser.add_argument('-c', '--countsdir', required=False, default="/net/bbi/vol1/data/sge-analysis/nobackup/counts/",
+                        help="Directory for counts output. Gene-specific subdirectories will be appended automatically")
+    
     args = parser.parse_args()
 
+    mygenes = set()
     nsamples = 0
-    with open(args.samplelist) as infile:
+    samplelist = os.path.abspath(args.samplelist)
+    with open(samplelist) as infile:
         for line in infile:
             nsamples += 1
-
+            gene = line.split("\t")[0]
+            mygenes.add(gene)
+            
     if args.concurrency > 0:
         concurrency = args.concurrency
     else:
         concurrency = 8
 
-    samplelist = args.samplelist
-    with open(args.outfile, 'w') as outfile:
+    fastqdir = args.fastqdir
+    if fastqdir[-1] == '/': fastqdir = fastqdir[:-1]
+    countsdir = args.countsdir
+    if countsdir[-1] == '/': countsdir = countsdir[:-1]
+    bamdir = args.bamdir
+    if bamdir[-1] == '/': bamdir = bamdir[:-1]
+
+    fastqdir = os.path.abspath(fastqdir)
+    countsdir = os.path.abspath(countsdir)
+    bamdir = os.path.abspath(bamdir)
+    
+    # create any missing output directories
+    for mydir in (fastqdir, countsdir, bamdir):
+        if not mydir:
+            sys.stderr.write("ERROR: please provide fastq, bam, and counts directories\n" % fastqdir)
+            sys.exit(-99)
+        if not os.path.isdir(mydir):
+            os.makedirs(mydir, exist_ok=True)
+            os.chmod(mydir, 0o775)
+            sys.stderr.write("INFO: created directory %s\n" % mydir)
+            
+        for gene in mygenes:
+            if not os.path.isdir(os.path.join(mydir, gene)):
+                os.mkdir(os.path.join(mydir, gene))
+                os.chmod(os.path.join(mydir, gene), 0o775)
+                sys.stderr.write("INFO: created directory %s\n" % os.path.join(mydir, gene))
+
+
+    with open(args.outfile, "w") if args.outfile else nullcontext(sys.stdout) as outfh:
         to_write = '''\
 #!/bin/bash
 #$ -S /bin/bash
@@ -33,6 +71,8 @@ def main():
 #$ -P shendure_bbi
 #$ -N sge_pipe
 #$ -t 1-{nsamples}
+#$ -l mfree=4G
+#$ -l h_rt=2:0:0
 #$ -tc {concurrency}
 #$ -e /net/bbi/vol1/data/sge-analysis/work/sge_logs/
 #$ -o /net/bbi/vol1/data/sge-analysis/work/sge_logs/
@@ -44,9 +84,9 @@ GENENAME=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 1)
 EXONNAME=$(awk "NR==$SGE_TASK_ID" {samplelist} | cut -f 2)
 
 ETCDIR=/net/bbi/vol1/data/sge-analysis/etc/${{GENENAME}}
-FQDIR=/net/bbi/vol1/data/sge-seq/nobackup/merged/${{GENENAME}}
-BAMDIR=/net/bbi/vol1/data/sge-analysis/nobackup/bam/${{GENENAME}}
-COUNTSDIR=/net/bbi/vol1/data/sge-analysis/nobackup/counts/${{GENENAME}}
+FQDIR={fastqdir}/${{GENENAME}}
+BAMDIR={bamdir}/${{GENENAME}}
+COUNTSDIR={countsdir}/${{GENENAME}}
 
 # for trimming and merging
 OUTMERGED=${{BASENAME}}.merged.fq.gz
@@ -76,9 +116,15 @@ SeqPrep -f ${{R1FILE}} \\
   ${{FQDIR}}/${{FQ_NO_N_FILE}}
 
 # mapping
-bwa mem ${{FAFILE}} ${{FQDIR}}/${{FQ_NO_N_FILE}} | samtools view -bS - \\
-  > ${{BAMDIR}}/${{OUTBAM}}
+bwa mem ${{FAFILE}} ${{FQDIR}}/${{FQ_NO_N_FILE}} | samtools sort -o ${{BAMDIR}}/${{OUTBAM}} -
 
+# index
+samtools index ${{BAMDIR}}/${{OUTBAM}}
+
+# depth
+samtools depth -a -H -o ${{COUNTSDIR}}/${{BASENAME}}.depth.tsv ${{BAMDIR}}/${{OUTBAM}}
+
+# counting
 /net/bbi/vol1/data/sge-analysis/bin/generateEditCounts \\
   -n ${{GENENAME}}_${{EXONNAME}} \\
   -t ${{ETCDIR}}/targets.tsv \\
@@ -90,8 +136,14 @@ bwa mem ${{FAFILE}} ${{FQDIR}}/${{FQ_NO_N_FILE}} | samtools view -bS - \\
     
 '''.format(concurrency=concurrency,
            nsamples=nsamples,
-           samplelist=samplelist)
-        outfile.write(to_write)
+           samplelist=samplelist,
+           fastqdir=fastqdir,
+           bamdir=bamdir,
+           countsdir=countsdir)
+        outfh.write(to_write)
+
+    if args.outfile:
+        sys.stderr.write("Wrote pipeline to %s\n" % args.outfile)
     return
     
 

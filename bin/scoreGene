@@ -19,7 +19,7 @@ def normalizeSNVscores(args):
                                                                   scorefile))
         df = pd.concat([df, tmpdf])
     df = df.reset_index(drop=True)
-    df = df[df["pam_edit_or_snp"] == False]
+    #df = df[df["pam_edit_or_snp"] == False]
 
     # now all scores have been read in
     scorecol = "target_score"
@@ -65,15 +65,15 @@ def normalizeSNVscores(args):
 
 
 def collapseScores(df):
-    df['snv_score'] = df.groupby(["chrom", "pos", "allele"])["scaled_snv_score"].transform(lambda x: x.median())
+    df['unnormalized_snv_score'] = df.groupby(["chrom", "pos", "allele"])["scaled_snv_score"].transform(lambda x: x.median())
     df = df.drop_duplicates(subset=["chrom", "pos", "allele"])
     return df
 
 
 def quasiMinMax(df):
-    synmed = df[(df["Consequence"] == "synonymous_variant")]["snv_score"].median() 
-    nonmed = df[(df["Consequence"] == "stop_gained")]["snv_score"].median()
-    df["snv_score_minmax"] = ((df["snv_score"] - nonmed) / (synmed - nonmed))
+    synmed = df[(df["Consequence"] == "synonymous_variant")]["unnormalized_snv_score"].median() 
+    nonmed = df[(df["Consequence"] == "stop_gained")]["unnormalized_snv_score"].median()
+    df["snv_score"] = ((df["unnormalized_snv_score"] - nonmed) / (synmed - nonmed))
     return df
 
 

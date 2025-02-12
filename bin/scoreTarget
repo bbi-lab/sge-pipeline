@@ -87,7 +87,8 @@ def saveSNVScoreFigure(target, args, plotdf):
     alldays = sorted(snvfiles.keys())
     alldays.remove('D00')
     lateday = alldays[1]
-    scorecol = "%s_log2_median" % lateday
+    #scorecol = "%s_log2_median" % lateday
+    scorecol = "target_score"
     overallmax = np.nanmax(plotdf[np.isfinite(plotdf[scorecol])][scorecol])
     overallmin = np.nanmin(plotdf[np.isfinite(plotdf[scorecol])][scorecol])
 
@@ -224,7 +225,7 @@ def scoreDels(target, args):
     return df
 
 
-def scoreSNVs(target, args):
+def scoreSNVs(target, args, qcfails):
     '''compute scores for SNVs
     
     '''
@@ -237,7 +238,6 @@ def scoreSNVs(target, args):
                                  pseudocount=args.pseudocount)
     df = df.rename(columns={'count': 'snvlib_count'}
         ).drop(columns=["sampleid", "repl", "day"])
-    
     statsfile = libfile.replace(".snvs.tsv", ".readstats.tsv")
     statsdf = sge_counts.getReadStats(statsfile, augment=False)
     normval = statsdf[args.normcol][0]
@@ -254,6 +254,11 @@ def scoreSNVs(target, args):
         if snvday == "D00": continue  # already loaded
         allrepls[snvday] = []
         for snvfile in sorted(snvfilelist):
+            baserepl = snvfile.replace(".snvs.tsv", "")
+            baserepl = "_".join(baserepl.split("_")[:-1])
+            if baserepl in qcfails:
+                print("INFO: found repl %s in qcfails, skipping" % snvfile)
+                continue
             # exclude neg
             if "_NC_" in snvfile:
                 continue
@@ -275,6 +280,7 @@ def scoreSNVs(target, args):
             normval = statsdf[args.normcol][0]
             tmpdf[freqcol] = tmpdf[countcol] / normval
             df = df.merge(tmpdf[["chrom", "pos", "allele", countcol, freqcol]], on=["chrom", "pos", "allele"])
+            
     if args.verbose:
         print("INFO: Finished loading data from %d samples" % nsamples)
         print("INFO: Found data from timepoints: ", list(allrepls.keys()))
@@ -289,16 +295,16 @@ def scoreSNVs(target, args):
     df["pam_edit_or_snp"] = False
     df.loc[df["pos"].isin(target.required_edits), "pam_edit_or_snp"] = True
     df.loc[df["pos"].isin(target.skip_pos), "pam_edit_or_snp"] = True
+    df = df[df["pam_edit_or_snp"] == False]
+    df = df[df["snvlib_count"] >= 100]
 
     # annotate with vep preditions
     vepdf = sge_util.getVEPdf(args.snvvepfile)
-    df = df.merge(vepdf[["pos", "allele", "Consequence"]], 
+    #df = df.merge(vepdf[["pos", "allele", "Consequence"]],
+    df = df.merge(vepdf[["pos", "allele", "Consequence",
+                         "cDNA_position", "CDS_position", "Protein_position", "Amino_acids"]],
                   on=["pos", "allele"])
     df['Consequence'] = df['Consequence'].map(lambda x: x.split(",")[0])
-
-    # remove positions we don't care about
-    df = df[df["pam_edit_or_snp"] == False]
-
 
     # now we have counts, frequencies, and annotations for each position and each sample.
     # next step is to convert them into scores
@@ -388,7 +394,9 @@ def normalizeSNVscores(target, args, df):
 
     # now scale scores
     newcols = []
+    replindex = 0
     for index, col in enumerate(scorecols):
+        replindex += 1
         dist = synmedians[index] - nonmedians[index]
         distratio = dist / mediandist
         if args.verbose:
@@ -400,11 +408,17 @@ def normalizeSNVscores(target, args, df):
             print("INFO: location shift=%f for %s" % (locationshift, col))
 
         locatedcol = scaledcol - locationshift
-        newcolname = col.replace("loess_adjust", "scaled")
+        newcolname = "R" + str(replindex) + "_score"
+        #newcolname = col.replace("loess_adjust", "scaled")
         df[newcolname] = locatedcol        
         newcols.append(newcolname)
     df["target_score"] = df[newcols].median(axis=1)
-    return df
+    keepcols = ["target", "chrom", "pos", "allele", "gene", "ref", "pos_id", "Consequence",
+                "cDNA_position", "CDS_position", "Protein_position", "Amino_acids"]
+    for n in newcols:
+        keepcols.append(n)
+    keepcols.append("target_score")
+    return df[keepcols]
 
 
 def saveSNVScores(args, scoredf):
@@ -447,7 +461,8 @@ def main():
                         help="add <pseudocount> to any zero-count position")
     parser.add_argument('-N', '--normcol', required=False, default="snv_reads",
                         help="Name of column in readstats file to use for normalization")
-    
+    parser.add_argument('-Q', '--qcfail', required=False, default="",
+                        help="Path to TSV file containing QC failing replicates in 'repl' column")
     parser.add_argument('-v', '--verbose', required=False, default=False,
                         action="store_true", help="Verbose output")
     args = parser.parse_args()
@@ -464,9 +479,16 @@ def main():
             sys.stderr.write("ERROR: Deletion figure output file must end in .html or .png\n")
             sys.exit(-1)
 
+    if args.qcfail:
+        qcdf = pd.read_csv(args.qcfail, header=0, sep="\t")
+        qcfails = qcdf["repl"].to_list()
+        sys.stderr.write("INFO: found %d replicates to skip in qc fail list\n" % len(qcfails))
+    else:
+        qcfails = []
+
     # SNV scoring
     if args.snvtsv:
-        scoredf = scoreSNVs(target, args)
+        scoredf = scoreSNVs(target, args, qcfails)
         scoredf = smoothSNVscores(target, args, scoredf)
         scoredf = normalizeSNVscores(target, args, scoredf)
         saveSNVScores(args, scoredf)
