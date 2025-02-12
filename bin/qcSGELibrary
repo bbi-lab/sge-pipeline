@@ -17,15 +17,15 @@ def saveSNVfigure(args, plotdf, figfile):
     a = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=30).encode(
         x=alt.X('pos_id:N', title="Variant" ,sort='y', axis=alt.Axis(labelFontSize=5)
         ),
-        y=alt.Y('lib_D00:Q', title="Library count", scale=alt.Scale()),
-        color=alt.Color('mutant_allele:N', title="Variant allele", scale=alt.Scale(scheme="category10")),
-        stroke=alt.Stroke("pam_edit_or_snp:N", title="Site skipped", scale=alt.Scale(range=["", "black"]))
+        y=alt.Y('count:Q', title="Library count", scale=alt.Scale()),
+        color=alt.Color('allele:N', title="Variant allele", scale=alt.Scale(scheme="category10")),
+        stroke=alt.Stroke("pam_edit_or_snp:N", title="Fixed edit or SNP", scale=alt.Scale(range=["", "black"]))
         )
     b = alt.Chart(plotdf, height=200, width=1000).mark_point(filled=True, size=50).encode(
-    x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
+        x=alt.X('pos:N', title="Position" ,sort='x', axis=alt.Axis(labelFontSize=10)
         ),
-        y=alt.Y('lib_D00:Q', title="library count", scale=alt.Scale()),
-        color=alt.Color('mutant_allele:N', title="Variant allele"),
+        y=alt.Y('count:Q', title="Library count", scale=alt.Scale()),
+        color=alt.Color('allele:N', title="Variant allele"),
         stroke=alt.Stroke("pam_edit_or_snp:N", scale=alt.Scale(range=["", "black"]))
         )
     fullfigure = (a & b).properties(title="SNV Library uniformity for %s" % args.targetname
@@ -51,8 +51,8 @@ def saveDelFigure(args, plotdf, figfile):
         x=alt.X('start:Q', title='Deletion coordinates').scale(zero=False),
         x2='end:Q',
         y=alt.Y('count:Q', title='Count in day 0 library').scale(zero=False),
-        color=alt.Color('pam_edit_or_snp:N', title="Site skipped", scale=alt.Scale(scheme="category10")
-        )).properties(title="3-bp deletion frequencies in BARD1 X1A v2 Day 0 library")
+        color=alt.Color('pam_edit_or_snp:N', title="Site skipped", scale=alt.Scale(scheme="category10"))
+        )
     
     fullfigure = (a & b).properties(title="Deletion library uniformity for %s" % args.targetname
                     ).configure_title(fontSize=20, 
@@ -66,11 +66,12 @@ def saveDelFigure(args, plotdf, figfile):
 
 
 def main():
-    parser = argparse.ArgumentParser('extract matrix of edits for an SGE sample')
+    parser = argparse.ArgumentParser('create visualization of library uniformity for SGE target')
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
-    parser.add_argument('-t', '--targetfile', required=True, 
-                        help="File containing list of targets and expected edits")
+    parser.add_argument('-t', '--targetfile', required=False, 
+                        help="File containing list of targets and expected edits",
+                        default="")
     parser.add_argument('-s', '--snvs', required=False, default="", 
                         help="Input file of SNV counts")
     parser.add_argument('-d', '--dels', required=False, default="", 
@@ -90,7 +91,15 @@ def main():
     snv_figure_file = args.outdir + "%s.snv_library.png" % args.targetname
     del_figure_file = args.outdir + "%s.del_library.png" % args.targetname
 
-    target = sge_target.Target(args.targetname, args.targetfile)
+    if not args.targetfile:
+        targetfile = sge_util.guess_target_file(args.targetname)
+        if not targetfile:
+            sys.stderr.write("ERROR: Can't find a target file to use, please specify with -t\n")
+            sys.exit(-99)
+    else:
+        targetfile = args.targetfile
+
+    target = sge_target.Target(args.targetname, targetfile)
 
     if args.snvs:
         # read the snv counts

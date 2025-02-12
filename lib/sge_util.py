@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import pysam
 import glob
+import os
 
 import sge_counts
 import sge_target
@@ -73,4 +74,36 @@ def getVEPdf(vepfile, type="snv"):
     else:
         return None
     return vepdf
+
+
+
+def guess_target_file(targetname):
+    '''convenience function so that the user doesn't have to specify
+       the target file path every time
+    '''
+    try:
+        genename = targetname.split("_")[0]
+        if os.path.exists('/net/bbi/vol1/data/sge-analysis/etc/%s/targets.tsv' % genename):
+            return '/net/bbi/vol1/data/sge-analysis/etc/%s/targets.tsv' % genename
+        else:
+            return None
+    except:
+        return None
+    
+
+def makeAAsub(row):
+    '''
+    take VEP output rows and create an amino acid substitutiion string
+    given the protein position and amino acid codes
+    '''
+    ppos = str(row["Protein_position"])
+    aa = row["Amino_acids"]
+    if len(aa) == 1:
+        aa1 = aa[0]
+        aa2 = aa[0]
+    else:
+        aa1 = aa[0]
+        aa2 = aa[2]
+    return aa1 + ppos + aa2
+
 
