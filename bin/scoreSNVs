@@ -1,0 +1,402 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+import pandas as pd
+import os
+
+from pydeseq2.dds import DeseqDataSet
+from pydeseq2.default_inference import DefaultInference
+from pydeseq2.ds import DeseqStats
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_util
+import sge_counts
+import sge_target
+
+
+def saveSNVScores(args, df):
+    outfile = args.outfile
+    df.to_csv(outfile, index=False, sep="\t", float_format='%g')
+    if args.verbose:
+        sys.stderr.write("INFO: wrote SNV scores to %s\n" % outfile)
+    return
+
+
+def getAnnots(args, vepdir, targetlist):
+    if args.verbose:
+        sys.stderr.write("INFO: Loading annotation files for variants from %s\n" % vepdir)
+    annotdf = pd.DataFrame()
+    for target in targetlist:
+        vepfile = os.path.join(vepdir, "%s.snvs.vep.tsv" % target)
+        vepdf = sge_util.getVEPdf(vepfile)
+        vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
+        vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
+        vepdf["pos_id"] = vepdf["pos"] + ":" + vepdf["allele"]
+        annotdf = pd.concat([annotdf, vepdf[["chrom", "pos", "allele", "pos_id", "amino_acid_change", "Consequence"]]])
+    annotdf = annotdf.drop_duplicates()
+    return annotdf
+
+
+def handleDups(args, countsdf, dupdf):
+    if args.verbose:
+        sys.stderr.write("INFO: Collapsing scores of duplicated variants\n")
+    filtdf = countsdf[countsdf["pos_id"].isin(dupdf["pos_id"])]
+    if args.verbose:
+        sys.stderr.write("INFO: identified %d duplicate entries\n" % filtdf.shape[0])
+    groupdf = filtdf.groupby(["pos_id"]).agg(
+        {
+            'snvlib_count': ['first', 'last'],
+            'D05_R1': ['first', 'last'],
+            'D05_R2': ['first', 'last'],
+            'D05_R3': ['first', 'last'],
+            'D13_R1': ['first', 'last'],
+            'D13_R2': ['first', 'last'],
+            'D13_R3': ['first', 'last']
+        }
+    ).reset_index()
+    groupdf.columns = [
+        "pos_id", "snvlib_count_A", "snvlib_count_B",
+        "D05_R1_A", "D05_R1_B",
+        "D05_R2_A", "D05_R2_B",
+        "D05_R3_A", "D05_R3_B",
+        "D13_R1_A", "D13_R1_B",
+        "D13_R2_A", "D13_R2_B",
+        "D13_R3_A", "D13_R3_B",
+    ]
+    groupdfmelt = pd.melt(groupdf, id_vars=['pos_id'])
+    groupdfpivot = pd.pivot(groupdfmelt, index='variable', columns=['pos_id'], values='value')
+    groupdfpivot = groupdfpivot.rename_axis(None, axis=1)
+    groupdfpivot = groupdfpivot.rename_axis(None, axis=0)
+
+    metanames = [
+        'D05_R1_A', 'D05_R1_B',
+        'D05_R2_A', 'D05_R2_B',
+        'D05_R3_A', 'D05_R3_B',
+        'D13_R1_A', 'D13_R1_B',
+        'D13_R2_A', 'D13_R2_B',
+        'D13_R3_A', 'D13_R3_B', 
+        'snvlib_count_A', 'snvlib_count_B'
+    ]
+
+    metadays = [
+        5, 5, 5, 5, 5, 5, 
+        13, 13, 13, 13, 13, 13, 
+        0, 0
+    ]
+    metagroups = [
+        "A", "B", "A", "B", "A", "B",
+        "A", "B", "A", "B", "A", "B",
+        "A", "B"
+    ]
+        
+    metadf = pd.DataFrame(
+        {
+            'sample_name': metanames,
+            'time': metadays,
+            'group': metagroups
+        }
+    )
+    metadf = metadf.set_index('sample_name').rename_axis(None, axis=0)
+    # fit a continuous time model to estimate per-day LFC
+    inference = DefaultInference(n_cpus=1)
+    dds = DeseqDataSet(
+        counts=groupdfpivot,
+        metadata=metadf,
+        design="~time+group",
+        refit_cooks=True,
+        inference=inference,
+    )
+    dds.deseq2()
+    contrast = ["time", 1, 0]
+    stat_res = DeseqStats(dds, contrast=contrast, inference=inference)
+    stat_res.summary()
+    resdf = stat_res.results_df
+    resdf = resdf.reset_index(names='pos_id')#.drop(columns=['index'])
+
+    resdf = resdf.rename(
+        columns={
+            'log2FoldChange': 'overlap_LFC',
+            'lfcSE': 'overlap_lfcSE'
+            }
+    )
+    return resdf
+
+    
+def scoreTarget(args, tdf, t, nsamples):
+    if args.verbose:
+        sys.stderr.write("INFO: Scoring variants in %s\n" % t)
+
+    # construct the matrix for model input
+    value_cols = [col for col in tdf.columns if "D13" in col or "D05" in col or "snvlib_count" in col]
+    dfmelt = pd.melt(tdf, id_vars=['pos_id'], value_vars=value_cols)
+    dfpivot = pd.pivot(dfmelt, index='variable', columns=['pos_id'], values='value')
+    dfpivot = dfpivot.rename_axis(None, axis=1)
+    dfpivot = dfpivot.rename_axis(None, axis=0)
+
+    # construct the metadata
+    if nsamples == 7:
+        metanames = ['D05_R1', 'D05_R2', 'D05_R3', 'D13_R1', 'D13_R2', 'D13_R3', 'snvlib_count']
+        metadays = [5, 5, 5, 13, 13, 13, 0]
+
+    elif nsamples == 5:
+        metanames = ['D05_R1', 'D05_R2', 'D13_R1', 'D13_R2', 'snvlib_count']
+        metadays = [5, 5, 13, 13, 0]
+        
+    metadf = pd.DataFrame(
+        {'sample_name': metanames,
+        'time': metadays,
+        }
+    )
+    metadf = metadf.set_index('sample_name').rename_axis(None, axis=0)
+
+    # fit a continuous time model to estimate per-day LFC
+    inference = DefaultInference(n_cpus=1)  # no good reason to increase n_cpus for this scale of data
+    dds = DeseqDataSet(
+        counts=dfpivot,
+        metadata=metadf,
+        design="~time",
+        refit_cooks=True,
+        inference=inference,
+    )
+    dds.deseq2()
+    contrast = ["time", 1, 0]
+    stat_res = DeseqStats(dds, contrast=contrast, inference=inference)
+    stat_res.summary()
+    resdf = stat_res.results_df
+    resdf = resdf.reset_index(names='pos_id')#.drop(columns=['index'])
+    resdf = resdf.merge(tdf[[
+        "chrom", "pos", "allele", "ref", "pos_id", 
+    ]])
+    resdf["target"] = t
+    return resdf
+
+
+def filterCounts(args, tdf, t):
+    if args.verbose:
+        sys.stderr.write("INFO: filtering counts for target %s\n" % t)
+        sys.stderr.write("INFO: before filtering, dataframe has %d variants\n" % tdf.shape[0])
+    
+    freqcols = [col for col in tdf.columns if ("D13" in col or "D05" in col or "snvlib" in col) 
+                and "freq" in col]
+    countcols = [col for col in tdf.columns if ("D13" in col or "D05" in col or "snvlib_count" in col) 
+                and "freq" not in col]
+    minfreq = args.minfreq
+    mincount = args.mincount
+    cnd = (tdf["target"] == t)
+    for fcol in freqcols:
+        cnd &= (tdf[fcol] >= minfreq)
+    for ccol in countcols:
+        cnd &= (tdf[ccol] >= mincount)
+    tdf = tdf[cnd]
+    # we don't need freqcols anymore
+    tdf = tdf.drop(columns=freqcols)
+    if args.verbose:
+        sys.stderr.write("INFO: after filtering, dataframe has %d variants\n" % tdf.shape[0])
+    return tdf
+
+
+def loadCounts(args, targetfile, t):
+    if args.verbose:
+        sys.stderr.write("INFO: working on target %s\n" % t)
+    target = sge_target.Target(t, targetfile)
+    # load the day 0 library
+    snvfiles = target.getSNVSampleList(args.countsdir,
+        include_neg=False)
+    libfile = snvfiles['D00'][0]
+    df = sge_counts.getSNVCounts(libfile,
+                                augment=True,
+                                pseudocount=1)
+    df = df.rename(columns={'count': 'snvlib_count'}
+            ).drop(columns=["sampleid", "repl", "day"])
+
+    # load the various timepoints and replicates
+    nsamples = 1
+    allrepls = {}
+    for snvday, snvfilelist in sorted(snvfiles.items()):
+        if snvday == "D00": continue  # already loaded
+        allrepls[snvday] = []
+        for snvfile in sorted(snvfilelist):
+            # exclude neg
+            if "_NC_" in snvfile:
+                continue
+            nsamples += 1
+            if args.verbose:
+                sys.stderr.write("INFO: loading data from %s\n" % snvfile)
+            tmpdf = sge_counts.getSNVCounts(snvfile,
+                                            augment=False,
+                                            pseudocount=1)
+            statsfile = snvfile.replace(".snvs.tsv", ".readstats.tsv")
+            statsdf = sge_counts.getReadStats(statsfile, augment=False)
+            sampleid = tmpdf["sampleid"][0]
+            parts = sampleid.split("_")
+            repl = parts[2]
+            allrepls[snvday].append(repl)
+            countcol = "%s_%s" % (snvday, repl)
+            tmpdf = tmpdf.rename(columns={'count': countcol})
+            
+            # comment out this block
+            freqcol = countcol + "_freq"
+            normval = statsdf["snv_reads"][0]
+            tmpdf[freqcol] = tmpdf[countcol] / normval
+            
+            df = df.merge(tmpdf[["chrom", "pos", "allele", countcol, 
+                                freqcol  # comment this out
+                                ]], on=["chrom", "pos", "allele"])
+    
+    if args.verbose:
+        sys.stderr.write("INFO: Finished loading data from %d samples\n" % nsamples)
+        sys.stderr.write("INFO: Found data from timepoints: %s\n" % (', '.join(list(allrepls.keys()))))
+
+    # filter the counts for only the edited bases
+    df = df[(df["pos"] >= target.editstartpos) &
+            (df["pos"] <= target.editendpos)]
+    
+    # merge with the reference sequence
+    df = df.merge(target.refdf, on="pos")
+    df = df[df["ref"] != df["allele"]]
+    df["pos_id"] = df["pos"].astype(str) + ":" + df["allele"]
+    df = df[~df["pos"].isin(target.required_edits)]
+    df = df[~df["pos"].isin(target.skip_pos)]
+
+    # this next bit needs to be more flexible if the days are not day 5/13
+
+    # now we need to convert this to n_samples as rows, and n_variants as columns
+    value_cols = [col for col in df.columns if "D13" in col or "D05" in col or "snvlib_count" in col
+                ]
+    #if args.verbose:
+    #    sys.stderr.write("INFO: original colnames: %s\n" % (', '.join(lvalue_cols)))
+    d5_count = 1
+    d13_count = 1
+    for colname in df.columns:
+        if colname.startswith("D05"):
+            if not colname.endswith("_freq"):
+                df = df.rename(columns={colname: "D05_R%d" % d5_count})
+            else:
+                df = df.rename(columns={colname: "D05_R%d_freq" % d5_count})
+                d5_count += 1
+
+        if colname.startswith("D13"):
+            if not colname.endswith("_freq"):
+                df = df.rename(columns={colname: "D13_R%d" % d13_count})
+            else:
+                df = df.rename(columns={colname: "D13_R%d_freq" % d13_count})
+                d13_count += 1
+
+    #sys.stderr.write("INFO: updated colnames: %s\n" % (', '.join(value_cols)))
+    df["target"] = t
+    return df, nsamples
+
+
+def main():
+    parser = argparse.ArgumentParser('combine and normalize SNV scores across a gene')
+    parser.add_argument('-o', '--outfile', required=True,
+                        help="Path to output TSV file of scores")
+    parser.add_argument('-g', '--gene', required=True,
+                        help='Gene to score')
+    parser.add_argument('-V', '--vepdir', required=False,
+                        help="Path to directory with VEP files")
+    parser.add_argument('-t', '--targetfile', required=False,
+                        help='Path to target file (can be auto detected)')
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    parser.add_argument('-c', '--countsdir', required=True,
+                        help='Load counts files from <countsdir>')
+    parser.add_argument('-x', '--exclude', required=False,
+                        help='Exclude these regions when scoring a gene (comma-sep list)')
+    parser.add_argument('-m', '--mincount', required=False, type=int, default=0,
+                        help='filter out variants with raw counts less than <mincount> in any replicate')
+    parser.add_argument('-M', '--minfreq', required=False, type=float, default=0.,
+                        help='filter out variants with frequencies less than <minfreq> in any replicate')
+
+    args = parser.parse_args()
+
+
+    # handle the targetfile
+    if not args.targetfile:
+        targetfile = sge_util.guess_target_file(args.gene)
+    else:
+        targetfile = args.targetfile
+    if not targetfile or not os.path.exists(targetfile):
+        sys.stderr.write("ERROR: Can't locate target file\n")
+        sys.exit(-99)
+    
+    # handle the VEP output directory
+    if not args.vepdir:
+        vepdir = "/net/bbi/vol1/data/sge-analysis/etc/%s/" % args.gene
+    else:
+        vepdir = args.vepdir
+    if not os.path.isdir(vepdir):
+        sys.stderr.write("ERROR: Can't find VEP directory %s\n" % vepdir)
+        sys.exit(-99)
+
+    # check for excluded targets
+    exclude_targets = []
+    if args.exclude:
+        parts = args.exclude.split(",")
+        for p in parts:
+            exclude_targets.append(p)
+
+    # load the target file and exclude any targets if necessary
+    targetdf = pd.read_csv(targetfile, sep="\t", header=0)
+    targetlist = targetdf["target"].to_list()
+    
+    if args.verbose:
+        sys.stderr.write("INFO: Found %d targets in targetfile %s\n" % (len(targetlist),
+                                                                        targetfile))
+    targetlist = [tl for tl in targetlist if tl not in exclude_targets]
+    #for t in targetlist:
+
+    #    if t in exclude_targets:
+    #        targetlist.remove(t)
+    #        if args.verbose:
+    #            sys.stderr.write("INFO: Excluded target %s based on exclude list\n" %
+    #                             (t))
+    #    else:
+    #        if args.verbose:
+    #            sys.stderr.write("INFO: Found target %s\n" %
+    #                            (t))
+    if args.verbose:
+        sys.stderr.write("INFO: After processing excludions, %d targets remain\n" % (len(targetlist)))
+    
+    annotdf = getAnnots(args, vepdir, targetlist)
+    countsdf = pd.DataFrame()
+    scoredf = pd.DataFrame()
+    for t in targetlist:
+        tdf, nsamples = loadCounts(args, targetfile, t)
+        tdf = filterCounts(args, tdf, t)        
+        countsdf = pd.concat([countsdf, tdf])
+        tscoresdf = scoreTarget(args, tdf, t, nsamples)
+        scoredf = pd.concat([scoredf, tscoresdf])
+
+    # at this point we've scored all the targets.  now we need to identify the 
+    # variants that are covered twice
+
+    dupdf = scoredf[scoredf.duplicated("pos_id", keep=False) == True]
+    dupscoredf = handleDups(args, countsdf, dupdf)
+    scoredf = scoredf.merge(dupscoredf[["pos_id", "overlap_LFC", "overlap_lfcSE"]],
+                            on="pos_id", how="outer")
+    scoredf = scoredf.drop_duplicates(subset=["pos_id"])
+    scoredf["score"] = scoredf["overlap_LFC"]
+    scoredf["se"] = scoredf["overlap_lfcSE"]
+    scoredf.loc[scoredf["score"].isna(), "score"] = scoredf["log2FoldChange"]
+    scoredf.loc[scoredf["se"].isna(), "se"] = scoredf["lfcSE"]
+    scoredf["ciUpper"] = scoredf["score"] + (1.96 * scoredf["se"])
+    scoredf["ciLower"] = scoredf["score"] - (1.96 * scoredf["se"])
+    scoredf = scoredf.merge(annotdf[["pos_id", "Consequence",
+                                     "amino_acid_change"]], on="pos_id")
+
+    scoredf["shortconsequence"] = scoredf["Consequence"].map(lambda x: x.split("_")[0])
+    scoredf.loc[scoredf["shortconsequence"] == "5", "shortconsequence"] = "5' UTR"
+    scoredf.loc[scoredf["shortconsequence"] == "3", "shortconsequence"] = "3' UTR"
+    scoredf = scoredf[[
+        "chrom", "pos", "allele", "ref", "pos_id", "Consequence", 
+        "shortconsequence", "score", "se", "ciUpper", "ciLower", "amino_acid_change"]]
+
+    saveSNVScores(args, scoredf)
+    return 0
+
+
+if __name__ == '__main__':
+    main()
+    
