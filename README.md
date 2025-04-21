@@ -22,9 +22,13 @@ $ mamba env create -f /net/bbi/vol1/data/sge-analysis/etc/sge.environment.yaml
 ## Generate per-variant counts files
 To run the pipeline, you need to be able to submit cluster jobs – i.e., with qsub  This document does not cover logging into the cluster or basic cluster job control. 
 
-* Step 1: `mamba activate sge`
+* Step 1: Activate the environment
 
-* Step 2: Make a TSV file with one line for each dataset you want to process (i.e., one line per pair of FASTQ files).  The file must have five columns.  There should not be a header row.  The columns, in order, are:
+  ```mamba activate sge```
+
+* Step 2: Make a TSV file with one line for each dataset you want to process (i.e., one line per pair of FASTQ files).
+
+  The file must have five columns. There should not be a header row.  The columns, in order, are:
   * Gene (e.g., SFPQ)
   * Exon name  (e.g., X2A)
   * Library name, usually following a specific format: Gene_target_replicate_day (e.g., SFPQ_X2A_R1R4_D05)
@@ -41,11 +45,15 @@ To run the pipeline, you need to be able to submit cluster jobs – i.e., with q
     The library name can be any arbitrary string, but there are several downstream steps (scoring, normalizing) that expect names in a certain format, in order to be able to automatically determine how many replicates are available and what timepoints were used.  So, for initial QC, you could use a name like SFPQ_X2A_testPCRconditionA_R1R4_D13 but eventually you will want to run the pipeline with the naming scheme shown above for production data.
 
 * Step 3: Confirm that each target in the file above has a definition in the gene-specific target files
+
   A target consists of the gene name and the exon name, separated by an underscore (e.g., `SFPQ_X2A`)
+
   Gene-specific targets are in `$SGEDIR/<gene>/targets.tsv`
+
   If there is not a target entry in this file (for example, if there is a new target), you will need to add one before you can run the pipeline.
 	
 * Step 4: Build the pipeline script
+
   Note that this step has not been made to be generic -- it still relies on some local cluster configuration, including queue names.  You may need to edit the `makePipeline` script to modify the skeleton of the pipeline files to get this to run with in a different environment.
 
 ```
@@ -57,7 +65,7 @@ $ $SGEDIR/bin/makePipeline \
   -c <directory to put the variant counts files in>
 ```
 
-As an Example:
+As an example:
 ```
 $ bin/makePipeline \
   -s EXAMPLE_FILELIST.tsv \
@@ -88,14 +96,16 @@ $ cp $SGEDIR/etc//${GENE}/targets.tsv /some/where/safe/
 ```
 
 * Step 2: Gather what you’ll need
-For each target, you need to know:
+
+  For each target, you need to know:
   * Amplicon coordinates: to get these, find the primer sequences used for the sequencing amplicon.  Pop them into the UCSC Genome Browser’s “In-Silico PCR” software to get the coordinates.  Make sure you have selected the right genome assembly: “Dec 2013 (GRCh38/hg38)”
   * Edited region coordinates: to get these, find the SGE oligo used for this target, and pop it into the UCSC Genome Browser’s BLAT search – again, making sure the right genome assembly is selected.  
   * The locations of the “fixed edits” – the edits that should be found on every valid read.
   * Any positions that you need to skip in the analysis.  Typically these will not be known in advance, but rather will emerge after running the pipeline and identifying issues.
 
 * Step 3: Edit the targets.tsv file
-Please ensure that the fields are separated by tabs and not spaces, and add a new row to the file:
+
+  Please ensure that the fields are separated by tabs and not spaces, and add a new row to the file:
   * In the first field, add the name of the target
   * In the second field, put the chromosome of the target, starting with ‘chr’
   * In the third and fourth fields, add the start and end coordinates of the edited region, as taken directly from the UCSC Genome Browser blat search.  Do not include commas.
@@ -113,7 +123,9 @@ $ $SGEDIR/bin/extractReferenceFastas \
 ```
 
 Step 5: Get variant annotations using vep
+
   The procedure (behind the scenes) is to create a VCF file containing all possible variants in the edited region, and (separately) a VCF file for the 3bp deletions.  These VCF files are used as input into the Variant Effect Predictor (vep) which marks up each variant with its predicted effect (nonsense, missense, etc) and outputs a TSV file of the results.  That TSV file then gets used by downstream programs.
+
 ```
 $ $SGEDIR/bin/getVariantAnnotations \
   -t $SGEDIR/etc/${GENE}/targets.tsv \
@@ -123,6 +135,7 @@ $ $SGEDIR/bin/getVariantAnnotations \
 
 
 ## Compute scores per variant
+
 Once you have generated all of the per-variant counts files, you will want to compute scores
 
 ```
