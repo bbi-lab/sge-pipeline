@@ -1,0 +1,154 @@
+!Assay
+seqspec_version: 0.3.0
+assay_id: SGE
+name: Saturation Genome Editing (SGE)
+doi: https://doi.org/10.1038/s41586-018-0461-z
+date: 12 September 2018
+description: editing native genomic loci to measure fitness effects of SNVs and deletions
+modalities:
+- dna
+lib_struct: ''
+sequence_protocol: Illumina NextSeq 550 (EFO:0008566)
+sequence_kit: NextSeq 500/550 High-Output v2.5 Kit
+library_protocol: DNA sequencing assay (OBI:0000626)
+library_kit: Custom/Nextera/Truseq dual index
+sequence_spec:
+  - !Read
+    read_id: R1.fastq.gz
+    name: Read 1
+    modality: dna
+    primer_id: truseq_read1
+    min_len: 150
+    max_len: 150
+    strand: pos
+    files:
+    - !File
+      file_id: R1.fastq.gz
+      filename: R1.fastq.gz
+      filetype: fastq
+      filesize: 78445940
+      url: ./R1.fastq.gz
+      urltype: local
+      md5: 01e5a987b9669785805969223d440dbb
+  - !Read
+    read_id: R2.fastq.gz
+    name: Read 2
+    modality: dna
+    primer_id: nextera_read2
+    min_len: 150
+    max_len: 150
+    strand: neg
+    files:
+    - !File
+      file_id: R2.fastq.gz
+      filename: R2.fastq.gz
+      filetype: fastq
+      filesize: 76221653
+      url: ./R2.fastq.gz
+      urltype: local
+      md5: 0f93abb4ebcb3df345693832e2d4c399
+library_spec:
+- !Region
+  parent_id: null
+  region_id: dna
+  region_type: dna
+  name: dna
+  sequence_type: joined
+  sequence: AATGATACGGCGACCACCGAGATCTACACNNNNNNNNNNACACTCTTTCCCTACACGACGCTCTTCCGATCTXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCTGTCTCTTATACACATCTCCGAGCCCACGAGACNNNNNNNNNNATCTCGTATGCCGTCTTCTGCTTG
+  min_len: 0
+  max_len: 440
+  onlist: null
+  regions:
+  - !Region
+    parent_id: dna
+    region_id: illumina_p5
+    region_type: illumina_p5
+    name: Illumina P5
+    sequence_type: fixed
+    sequence: AATGATACGGCGACCACCGAGATCTACAC
+    min_len: 29
+    max_len: 29
+    onlist: null
+    regions: null
+  - !Region
+    parent_id: dna
+    region_id: index5
+    region_type: index5
+    name: index5
+    sequence_type: onlist
+    sequence: NNNNNNNNNN
+    min_len: 10
+    max_len: 10
+    onlist: !Onlist
+      file_id: i5_onlist.txt
+      filename: i5_onlist.txt
+      filetype: txt
+      filesize: 1056
+      url: ''
+      urltype: local
+      md5: 4c26268d753bbb1bcf7fa60e16862c8d
+      location: local
+    regions: null
+  - !Region
+    parent_id: dna
+    region_id: truseq_read1
+    region_type: truseq_read1
+    name: truseq_read1
+    sequence_type: fixed
+    sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCT
+    min_len: 33
+    max_len: 33
+    onlist: null
+    regions: null
+  - !Region
+    parent_id: dna
+    region_id: insert
+    region_type: dna
+    name: insert
+    sequence_type: random
+    sequence: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    min_len: 1
+    max_len: 300
+    onlist: null
+    regions: null
+  - !Region
+    parent_id: dna
+    region_id: nextera_read2
+    region_type: nextera_read2
+    name: nextera_read2
+    sequence_type: fixed
+    sequence: CTGTCTCTTATACACATCTCCGAGCCCACGAGAC
+    min_len: 34
+    max_len: 34
+    onlist: null
+    regions: null
+  - !Region
+    parent_id: dna
+    region_id: index7
+    region_type: index7
+    name: index7
+    sequence_type: onlist
+    sequence: NNNNNNNNNN
+    min_len: 10
+    max_len: 10
+    onlist: !Onlist
+      file_id: i7_onlist.txt
+      filename: i7_onlist.txt
+      filetype: txt
+      filesize: 1056
+      url: ''
+      urltype: local
+      md5: 3e143108e06d8e636767f6dde0e3f8f5
+      location: local
+    regions: null
+  - !Region
+    parent_id: dna
+    region_id: illumina_p7
+    region_type: illumina_p7
+    name: illumina_p7
+    sequence_type: fixed
+    sequence: ATCTCGTATGCCGTCTTCTGCTTG
+    min_len: 24
+    max_len: 24
+    onlist: null
+    regions: null

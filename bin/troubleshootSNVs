@@ -35,6 +35,10 @@ def process_snv_read(target, args, req_edits, readobj):
     for (read_offset, ref_offset, ref_base) in apairs:
         if target.ampstartpos + ref_offset in target.skip_pos:
             continue
+        if target.ampstartpos + read_offset < target.editstartpos \
+            or target.ampstartpos + read_offset > target.editendpos:
+            continue
+        
         if ref_base.islower(): # lowercase means a mismatch between ref and read
             local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[ref_offset]
     if len(local_edits) == 0:

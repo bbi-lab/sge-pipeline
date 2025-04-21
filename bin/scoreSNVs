@@ -4,6 +4,7 @@ import sys
 import argparse
 import pandas as pd
 import os
+import string
 
 from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
@@ -14,6 +15,25 @@ import sge_util
 import sge_counts
 import sge_target
 
+from scipy.stats import norm
+
+# Function to assign the most important SO summary term
+def get_simplified_consequence(vep_terms):
+    consequence_df = pd.read_csv("/net/bbi/vol1/data/sge-analysis/etc/extended_ensembl_consequence.tsv", sep='\t')
+    # Create a dictionary mapping terms to their SO summary term (prioritizing importance)
+    mapping_dict = (
+        consequence_df.sort_values(by="Importance", ascending=False)
+        .groupby("VEP output term")[["SO summary term", "Importance"]]
+        .first()
+        .to_dict()["SO summary term"]
+    )
+    if not isinstance(vep_terms, str):  
+        return "Unknown"
+    terms = vep_terms.split(',')  
+    matched_terms = [mapping_dict.get(term.strip()) for term in terms if term.strip() in mapping_dict]  # Match terms
+    
+    return matched_terms[0] if matched_terms else "Unknown"
+
 
 def saveSNVScores(args, df):
     outfile = args.outfile
@@ -21,6 +41,54 @@ def saveSNVScores(args, df):
     if args.verbose:
         sys.stderr.write("INFO: wrote SNV scores to %s\n" % outfile)
     return
+
+
+def saveZDistAndThresholds(args, mu, std, lthresh, uthresh):
+    filepath = args.savez
+    with open(filepath, "w") as outfile:
+        outfile.write("#mu_neut\tstd_neut\tlthresh\tuthresh\n")
+        outfile.write("%f\t%f\t%f\t%f\n" % (mu, std, lthresh, uthresh))
+    if args.verbose:
+        sys.stderr.write("INFO: wrote z score and threshold parameters to %s\n" % filepath)
+    return
+                      
+
+def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
+    neutral_cnd = ((scoredf["simplified_consequence"].isin(["synonymous_variant", "intron_variant"])) &
+                   (scoredf["variant_qc_flag"] == "PASS") &
+                   (~scoredf["pos"].isin(exclude_nonsense_coords)))
+    nonsense_cnd = ((scoredf["simplified_consequence"].isin(["stop_gained",])) &
+                    (scoredf["variant_qc_flag"] == "PASS") &
+                    (~scoredf["pos"].isin(exclude_nonsense_coords)))
+    nonsense_cnd_nofilt = ((scoredf["simplified_consequence"].isin(["stop_gained",])) &
+                           (scoredf["variant_qc_flag"] == "PASS"))
+    nonsense_count = scoredf[nonsense_cnd].shape[0]
+    nonsense_count_nofilt = scoredf[nonsense_cnd_nofilt].shape[0]
+    if args.verbose:
+        sys.stderr.write("INFO: identified %d nonsense variants for thresholding\n" %
+                         nonsense_count)
+        sys.stderr.write("INFO: without exon filtering, %d nonsense variants would have been used\n" %
+                         nonsense_count_nofilt)
+    
+    neutralvars = scoredf[neutral_cnd]["score"].to_list()
+    
+    mu_neut, std_neut = norm.fit(neutralvars)
+    scoredf['functional_consequence_zscore'] = (scoredf['score'] - mu_neut) / std_neut
+
+    # determine the thresholds
+    thresholds = []
+    thresholds.append(scoredf[neutral_cnd]['functional_consequence_zscore'].quantile(0.01))
+    thresholds.append(scoredf[nonsense_cnd]['functional_consequence_zscore'].quantile(0.95))
+    lthresh, uthresh = min(thresholds), max(thresholds)
+    if args.verbose:
+        sys.stderr.write("INFO: identified threshold values of %f and %f\n" % (lthresh, uthresh))
+    if args.savez:
+        saveZDistAndThresholds(args, mu_neut, std_neut, lthresh, uthresh)
+    # apply the labels
+    scoredf["functional_consequence"] = "indeterminate"
+    scoredf.loc[scoredf["functional_consequence_zscore"] <= lthresh, "functional_consequence"] = "functionally_abnormal"
+    scoredf.loc[scoredf["functional_consequence_zscore"] >= uthresh, "functional_consequence"] = "functionally_normal"
+    return scoredf
 
 
 def getAnnots(args, vepdir, targetlist):
@@ -52,7 +120,7 @@ def handleDups(args, countsdf, dupdf):
             'D05_R3': ['first', 'last'],
             'D13_R1': ['first', 'last'],
             'D13_R2': ['first', 'last'],
-            'D13_R3': ['first', 'last']
+            'D13_R3': ['first', 'last'],
         }
     ).reset_index()
     groupdf.columns = [
@@ -64,6 +132,7 @@ def handleDups(args, countsdf, dupdf):
         "D13_R2_A", "D13_R2_B",
         "D13_R3_A", "D13_R3_B",
     ]
+    
     groupdfmelt = pd.melt(groupdf, id_vars=['pos_id'])
     groupdfpivot = pd.pivot(groupdfmelt, index='variable', columns=['pos_id'], values='value')
     groupdfpivot = groupdfpivot.rename_axis(None, axis=1)
@@ -84,6 +153,7 @@ def handleDups(args, countsdf, dupdf):
         13, 13, 13, 13, 13, 13, 
         0, 0
     ]
+        
     metagroups = [
         "A", "B", "A", "B", "A", "B",
         "A", "B", "A", "B", "A", "B",
@@ -123,9 +193,17 @@ def handleDups(args, countsdf, dupdf):
     return resdf
 
     
-def scoreTarget(args, tdf, t, nsamples):
+def scoreTarget(args, tdf, t, nsamples, target_to_scoreday):
     if args.verbose:
         sys.stderr.write("INFO: Scoring variants in %s\n" % t)
+    if t[-1] not in string.digits:
+        shorttarget = t[:-1]
+    else:
+        shorttarget = t
+
+    scoreday = target_to_scoreday[t]
+    if args.verbose:
+        sys.stderr.write("INFO: set score day to %d for target %s\n" % (scoreday, t))
 
     # construct the matrix for model input
     value_cols = [col for col in tdf.columns if "D13" in col or "D05" in col or "snvlib_count" in col]
@@ -137,11 +215,11 @@ def scoreTarget(args, tdf, t, nsamples):
     # construct the metadata
     if nsamples == 7:
         metanames = ['D05_R1', 'D05_R2', 'D05_R3', 'D13_R1', 'D13_R2', 'D13_R3', 'snvlib_count']
-        metadays = [5, 5, 5, 13, 13, 13, 0]
+        metadays = [5, 5, 5, scoreday, scoreday, scoreday, 0]
 
     elif nsamples == 5:
         metanames = ['D05_R1', 'D05_R2', 'D13_R1', 'D13_R2', 'snvlib_count']
-        metadays = [5, 5, 13, 13, 0]
+        metadays = [5, 5, scoreday, scoreday, 0]
         
     metadf = pd.DataFrame(
         {'sample_name': metanames,
@@ -169,6 +247,7 @@ def scoreTarget(args, tdf, t, nsamples):
         "chrom", "pos", "allele", "ref", "pos_id", 
     ]])
     resdf["target"] = t
+    resdf["exon"] = shorttarget
     return resdf
 
 
@@ -199,6 +278,8 @@ def filterCounts(args, tdf, t):
 def loadCounts(args, targetfile, t):
     if args.verbose:
         sys.stderr.write("INFO: working on target %s\n" % t)
+
+    target_to_scoreday = {}
     target = sge_target.Target(t, targetfile)
     # load the day 0 library
     snvfiles = target.getSNVSampleList(args.countsdir,
@@ -248,6 +329,11 @@ def loadCounts(args, targetfile, t):
         sys.stderr.write("INFO: Finished loading data from %d samples\n" % nsamples)
         sys.stderr.write("INFO: Found data from timepoints: %s\n" % (', '.join(list(allrepls.keys()))))
 
+    if "D12" in allrepls.keys():
+        target_to_scoreday[t] = 12
+    else:
+        target_to_scoreday[t] = 13
+
     # filter the counts for only the edited bases
     df = df[(df["pos"] >= target.editstartpos) &
             (df["pos"] <= target.editendpos)]
@@ -262,10 +348,8 @@ def loadCounts(args, targetfile, t):
     # this next bit needs to be more flexible if the days are not day 5/13
 
     # now we need to convert this to n_samples as rows, and n_variants as columns
-    value_cols = [col for col in df.columns if "D13" in col or "D05" in col or "snvlib_count" in col
+    value_cols = [col for col in df.columns if "D13" in col or "D12" in col or "D05" in col or "snvlib_count" in col
                 ]
-    #if args.verbose:
-    #    sys.stderr.write("INFO: original colnames: %s\n" % (', '.join(lvalue_cols)))
     d5_count = 1
     d13_count = 1
     for colname in df.columns:
@@ -276,7 +360,7 @@ def loadCounts(args, targetfile, t):
                 df = df.rename(columns={colname: "D05_R%d_freq" % d5_count})
                 d5_count += 1
 
-        if colname.startswith("D13"):
+        if colname.startswith("D13") or colname.startswith("D12"):
             if not colname.endswith("_freq"):
                 df = df.rename(columns={colname: "D13_R%d" % d13_count})
             else:
@@ -285,13 +369,15 @@ def loadCounts(args, targetfile, t):
 
     #sys.stderr.write("INFO: updated colnames: %s\n" % (', '.join(value_cols)))
     df["target"] = t
-    return df, nsamples
+    return df, nsamples, target_to_scoreday
 
 
 def main():
     parser = argparse.ArgumentParser('combine and normalize SNV scores across a gene')
     parser.add_argument('-o', '--outfile', required=True,
                         help="Path to output TSV file of scores")
+    parser.add_argument('-z', '--savez', required=False, default="",
+                        help="Path to output TSV file of Z dist parameters and thresholds")
     parser.add_argument('-g', '--gene', required=True,
                         help='Gene to score')
     parser.add_argument('-V', '--vepdir', required=False,
@@ -304,13 +390,14 @@ def main():
                         help='Load counts files from <countsdir>')
     parser.add_argument('-x', '--exclude', required=False,
                         help='Exclude these regions when scoring a gene (comma-sep list)')
+    parser.add_argument('-X', '--nononsense', required=False,
+                         help="Exclude nonsense variants in these targets when assigning functional classes")
     parser.add_argument('-m', '--mincount', required=False, type=int, default=0,
                         help='filter out variants with raw counts less than <mincount> in any replicate')
     parser.add_argument('-M', '--minfreq', required=False, type=float, default=0.,
                         help='filter out variants with frequencies less than <minfreq> in any replicate')
 
     args = parser.parse_args()
-
 
     # handle the targetfile
     if not args.targetfile:
@@ -330,13 +417,6 @@ def main():
         sys.stderr.write("ERROR: Can't find VEP directory %s\n" % vepdir)
         sys.exit(-99)
 
-    # check for excluded targets
-    exclude_targets = []
-    if args.exclude:
-        parts = args.exclude.split(",")
-        for p in parts:
-            exclude_targets.append(p)
-
     # load the target file and exclude any targets if necessary
     targetdf = pd.read_csv(targetfile, sep="\t", header=0)
     targetlist = targetdf["target"].to_list()
@@ -344,29 +424,40 @@ def main():
     if args.verbose:
         sys.stderr.write("INFO: Found %d targets in targetfile %s\n" % (len(targetlist),
                                                                         targetfile))
-    targetlist = [tl for tl in targetlist if tl not in exclude_targets]
-    #for t in targetlist:
 
-    #    if t in exclude_targets:
-    #        targetlist.remove(t)
-    #        if args.verbose:
-    #            sys.stderr.write("INFO: Excluded target %s based on exclude list\n" %
-    #                             (t))
-    #    else:
-    #        if args.verbose:
-    #            sys.stderr.write("INFO: Found target %s\n" %
-    #                            (t))
+    # check for excluded targets
+    exclude_targets = []
+    if args.exclude:
+        parts = args.exclude.split(",")
+        for p in parts:
+            exclude_targets.append(p)
+    targetlist = [tl for tl in targetlist if tl not in exclude_targets]
     if args.verbose:
-        sys.stderr.write("INFO: After processing excludions, %d targets remain\n" % (len(targetlist)))
-    
+        sys.stderr.write("INFO: After processing exclusions, %d targets remain\n" % (len(targetlist)))
+
+    # check for targets to exclude from nonsense z score percentile calculation
+    exclude_nonsense = []
+    exclude_nonsense_coords = set()
+    if args.nononsense:
+        parts = args.nononsense.split(",")
+        for p in parts:
+            exclude_nonsense.append(p)
+    for target in exclude_nonsense:
+        edit_start_pos = targetdf.loc[targetdf["target"] == target, "editstart"].values[0]
+        edit_stop_pos = targetdf.loc[targetdf["target"] == target, "editstop"].values[0]
+        for pos in range(edit_start_pos, edit_stop_pos + 1, 1):
+            exclude_nonsense_coords.add(pos)
+    if args.verbose:
+        sys.stderr.write("INFO: Will exclude %d positions from nonsense threshold computation\n" % len(exclude_nonsense_coords))
+
     annotdf = getAnnots(args, vepdir, targetlist)
     countsdf = pd.DataFrame()
     scoredf = pd.DataFrame()
     for t in targetlist:
-        tdf, nsamples = loadCounts(args, targetfile, t)
-        tdf = filterCounts(args, tdf, t)        
+        tdf, nsamples, target_to_scoreday = loadCounts(args, targetfile, t)
+        tdf = filterCounts(args, tdf, t)
         countsdf = pd.concat([countsdf, tdf])
-        tscoresdf = scoreTarget(args, tdf, t, nsamples)
+        tscoresdf = scoreTarget(args, tdf, t, nsamples, target_to_scoreday)
         scoredf = pd.concat([scoredf, tscoresdf])
 
     # at this point we've scored all the targets.  now we need to identify the 
@@ -378,20 +469,52 @@ def main():
                             on="pos_id", how="outer")
     scoredf = scoredf.drop_duplicates(subset=["pos_id"])
     scoredf["score"] = scoredf["overlap_LFC"]
-    scoredf["se"] = scoredf["overlap_lfcSE"]
+    scoredf["standard_error"] = scoredf["overlap_lfcSE"]
     scoredf.loc[scoredf["score"].isna(), "score"] = scoredf["log2FoldChange"]
-    scoredf.loc[scoredf["se"].isna(), "se"] = scoredf["lfcSE"]
-    scoredf["ciUpper"] = scoredf["score"] + (1.96 * scoredf["se"])
-    scoredf["ciLower"] = scoredf["score"] - (1.96 * scoredf["se"])
+    scoredf.loc[scoredf["standard_error"].isna(), "standard_error"] = scoredf["lfcSE"]
+    scoredf["95_ci_upper"] = scoredf["score"] + (1.96 * scoredf["standard_error"])
+    scoredf["95_ci_lower"] = scoredf["score"] - (1.96 * scoredf["standard_error"])
     scoredf = scoredf.merge(annotdf[["pos_id", "Consequence",
                                      "amino_acid_change"]], on="pos_id")
 
-    scoredf["shortconsequence"] = scoredf["Consequence"].map(lambda x: x.split("_")[0])
-    scoredf.loc[scoredf["shortconsequence"] == "5", "shortconsequence"] = "5' UTR"
-    scoredf.loc[scoredf["shortconsequence"] == "3", "shortconsequence"] = "3' UTR"
+    scoredf["simplified_consequence"] = scoredf["Consequence"].apply(get_simplified_consequence)
+
+    scoredf["variant_qc_flag"] = "PASS"
+    scoredf = makeFunctionalClasses(args, scoredf, exclude_nonsense_coords)
+
+    # now add counts
+    snvlibs = countsdf.groupby(['pos_id'])['snvlib_count'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'snvlib_lib1', 1: 'snvlib_lib2'})
+    
+    d5r1 = countsdf.groupby(['pos_id'])['D05_R1'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'D05_R1_lib1', 1: 'D05_R1_lib2'})
+    d5r2 = countsdf.groupby(['pos_id'])['D05_R2'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'D05_R2_lib1', 1: 'D05_R2_lib2'})
+    d5r3 = countsdf.groupby(['pos_id'])['D05_R3'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'D05_R3_lib1', 1: 'D05_R3_lib2'})
+
+    d13r1 = countsdf.groupby(['pos_id'])['D13_R1'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'D13_R1_lib1', 1: 'D13_R1_lib2'})
+    d13r2 = countsdf.groupby(['pos_id'])['D13_R2'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'D13_R2_lib1', 1: 'D13_R2_lib2'})
+    d13r3 = countsdf.groupby(['pos_id'])['D13_R3'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'D13_R3_lib1', 1: 'D13_R3_lib2'})
+    
+    
+    scoredf = scoredf.merge(snvlibs, on="pos_id",
+                ).merge(d5r1, on="pos_id"
+                ).merge(d5r2, on="pos_id"
+                ).merge(d5r3, on="pos_id"
+                ).merge(d13r1, on="pos_id"
+                ).merge(d13r2, on="pos_id"
+                ).merge(d13r3, on="pos_id")
+    
     scoredf = scoredf[[
-        "chrom", "pos", "allele", "ref", "pos_id", "Consequence", 
-        "shortconsequence", "score", "se", "ciUpper", "ciLower", "amino_acid_change"]]
+        "chrom", "pos", "ref", "allele", "exon", "target",
+        "simplified_consequence", "score", "standard_error", "95_ci_upper", "95_ci_lower",
+        "amino_acid_change", "functional_consequence",
+        "functional_consequence_zscore", "variant_qc_flag",
+        "snvlib_lib1", "snvlib_lib2",
+        "D05_R1_lib1", "D05_R1_lib2",
+        "D05_R2_lib1", "D05_R2_lib2",
+        "D05_R3_lib1", "D05_R3_lib2",
+        "D13_R1_lib1", "D13_R1_lib2",
+        "D13_R2_lib1", "D13_R2_lib2",
+        "D13_R3_lib1", "D13_R3_lib2",
+    ]]
 
     saveSNVScores(args, scoredf)
     return 0
