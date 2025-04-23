@@ -43,7 +43,7 @@ Intronic						135	intron_variant	A transcript variant occurring within an intron
 NMD_transcript_variant	NMD_transcript_variant	A variant in a transcript that is the target of NMD	SO:0001621	NMD transcript variant	MODIFIER	130			
 non_coding_transcript_variant	non_coding_transcript_variant	A transcript variant of a non coding RNA gene	SO:0001619	Non coding transcript variant	MODIFIER	120			
 coding_transcript_variant	coding_transcript_variant	A transcript variant of a protein coding gene	SO:0001968	Coding transcript variant	MODIFIER	110			
-upstream_gene_variant	upstream_gene_variant	A sequence variant located 5' of a gene	SO:0001631	Upstream gene variant	MODIFIER	100			
+upstream_gene_variant	upstream_gene_variant	A sequence variant located 5' of a gene	SO:0001631	Upstream gene variant	MODIFIER	100	upstream_gene_variant		
 downstream_gene_variant	downstream_gene_variant	A sequence variant located 3' of a gene	SO:0001632	Downstream gene variant	MODIFIER	90			
 TFBS_ablation	TFBS_ablation	A feature ablation whereby the deleted region includes a transcription factor binding site	SO:0001895	TFBS ablation	MODIFIER	80			
 TFBS_amplification	TFBS_amplification	A feature amplification of a region containing a transcription factor binding site	SO:0001892	TFBS amplification	MODIFIER	70			
