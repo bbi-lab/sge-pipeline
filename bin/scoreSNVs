@@ -18,8 +18,8 @@ import sge_target
 from scipy.stats import norm
 
 # Function to assign the most important SO summary term
-def get_simplified_consequence(vep_terms):
-    consequence_df = pd.read_csv("/net/bbi/vol1/data/sge-analysis/etc/extended_ensembl_consequence.tsv", sep='\t')
+def get_simplified_consequence(vep_terms, ensemblfile):
+    consequence_df = pd.read_csv(ensemblfile, sep='\t')
     # Create a dictionary mapping terms to their SO summary term (prioritizing importance)
     mapping_dict = (
         consequence_df.sort_values(by="Importance", ascending=False)
@@ -54,13 +54,13 @@ def saveZDistAndThresholds(args, mu, std, lthresh, uthresh):
                       
 
 def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
-    neutral_cnd = ((scoredf["simplified_consequence"].isin(["synonymous_variant", "intron_variant"])) &
+    neutral_cnd = ((scoredf["consequence"].isin(["synonymous_variant", "intron_variant"])) &
                    (scoredf["variant_qc_flag"] == "PASS") &
                    (~scoredf["pos"].isin(exclude_nonsense_coords)))
-    nonsense_cnd = ((scoredf["simplified_consequence"].isin(["stop_gained",])) &
+    nonsense_cnd = ((scoredf["consequence"].isin(["stop_gained",])) &
                     (scoredf["variant_qc_flag"] == "PASS") &
                     (~scoredf["pos"].isin(exclude_nonsense_coords)))
-    nonsense_cnd_nofilt = ((scoredf["simplified_consequence"].isin(["stop_gained",])) &
+    nonsense_cnd_nofilt = ((scoredf["consequence"].isin(["stop_gained",])) &
                            (scoredf["variant_qc_flag"] == "PASS"))
     nonsense_count = scoredf[nonsense_cnd].shape[0]
     nonsense_count_nofilt = scoredf[nonsense_cnd_nofilt].shape[0]
@@ -382,6 +382,9 @@ def main():
                         help='Gene to score')
     parser.add_argument('-V', '--vepdir', required=False,
                         help="Path to directory with VEP files")
+    parser.add_argument('-e', '--ensemblfile', required=False,
+                        default="/net/bbi/vol1/data/sge-analysis/etc/extended_ensembl_consequence.tsv",
+                        help="Path to ensembl consequence groupings in TSV format")
     parser.add_argument('-t', '--targetfile', required=False,
                         help='Path to target file (can be auto detected)')
     parser.add_argument('-v', '--verbose', required=False, default=False,
@@ -477,11 +480,21 @@ def main():
     scoredf = scoredf.merge(annotdf[["pos_id", "Consequence",
                                      "amino_acid_change"]], on="pos_id")
 
-    scoredf["simplified_consequence"] = scoredf["Consequence"].apply(get_simplified_consequence)
-
+    scoredf["simplified_consequence"] = scoredf["Consequence"].apply(get_simplified_consequence, ensemblfile=args.ensemblfile)
+    scoredf = scoredf.drop(columns=["Consequence"]).rename(columns={'simplified_consequence': 'consequence',
+                                                                    'allele': 'alt'})
+    
     scoredf["variant_qc_flag"] = "PASS"
-    scoredf = makeFunctionalClasses(args, scoredf, exclude_nonsense_coords)
-
+    if scoredf.shape[0] >= 1000:
+        if args.verbose:
+            sys.stderr.write("INFO: Dataset has at least 1000 variants (%d); proceeding with functional class assignment\n" % scoredf.shape[0])
+        scoredf = makeFunctionalClasses(args, scoredf, exclude_nonsense_coords)
+    else:
+        if args.verbose:
+            sys.stderr.write("INFO: Dataset has less than 1000 variants (%d); not performing functional class assignment\n" % scoredf.shape[0])
+        scoredf["functional_consequence"] = ""
+        scoredf["functional_consequence_zscore"] = ""
+        
     # now add counts
     snvlibs = countsdf.groupby(['pos_id'])['snvlib_count'].apply(lambda x: pd.Series(list(x))).unstack().reset_index().rename(columns={0: 'snvlib_lib1', 1: 'snvlib_lib2'})
     
@@ -503,8 +516,8 @@ def main():
                 ).merge(d13r3, on="pos_id")
     
     scoredf = scoredf[[
-        "chrom", "pos", "ref", "allele", "exon", "target",
-        "simplified_consequence", "score", "standard_error", "95_ci_upper", "95_ci_lower",
+        "chrom", "pos", "ref", "alt", "exon", "target",
+        "consequence", "score", "standard_error", "95_ci_upper", "95_ci_lower",
         "amino_acid_change", "functional_consequence",
         "functional_consequence_zscore", "variant_qc_flag",
         "snvlib_lib1", "snvlib_lib2",
