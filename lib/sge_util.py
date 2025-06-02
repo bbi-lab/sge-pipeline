@@ -54,6 +54,12 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
     return mean_corrs
 
 
+def getHGVSp(vepstring):
+    try:
+        return vepstring.split(";")[4].split("=")[1].replace("%3D", "=")
+    except:
+        return ""
+
 
 def getVEPdf(vepfile, type="snv"):
     '''reads the output of Variant Effect Predictor files, converts to 
@@ -61,16 +67,18 @@ def getVEPdf(vepfile, type="snv"):
 
     '''
     if type == "snv":
-        vepdf = pd.read_csv(vepfile, sep="\t", skiprows=41)
+        vepdf = pd.read_csv(vepfile, sep="\t", skiprows=45)
         vepdf = vepdf.rename(columns={'Allele': 'allele'})
         vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
         vepdf["pos"] = vepdf["pos"].astype(int)
+        vepdf["hgvs_p"] = vepdf["Extra"].apply(getHGVSp)
     elif type == "del":
-        vepdf = pd.read_csv(vepfile, sep="\t", skiprows=41)
+        vepdf = pd.read_csv(vepfile, sep="\t", skiprows=45)
         vepdf[["chrom", "coords"]] = vepdf["Location"].str.split(":", expand=True)
         vepdf[["start", "end"]] = vepdf["coords"].str.split("-", expand=True)
         vepdf["start"] = vepdf["start"].astype(int)
         vepdf["end"] = vepdf["end"].astype(int)
+        vepdf["hgvs_p"] = vepdf["Extra"].apply(getHGVSp)
     else:
         return None
     return vepdf

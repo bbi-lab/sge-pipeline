@@ -101,7 +101,7 @@ def getAnnots(args, vepdir, targetlist):
         vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
         vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
         vepdf["pos_id"] = vepdf["pos"] + ":" + vepdf["allele"]
-        annotdf = pd.concat([annotdf, vepdf[["chrom", "pos", "allele", "pos_id", "amino_acid_change", "Consequence"]]])
+        annotdf = pd.concat([annotdf, vepdf[["chrom", "pos", "allele", "pos_id", "amino_acid_change", "Consequence", "hgvs_p"]]])
     annotdf = annotdf.drop_duplicates()
     return annotdf
 
@@ -478,7 +478,7 @@ def main():
     scoredf["95_ci_upper"] = scoredf["score"] + (1.96 * scoredf["standard_error"])
     scoredf["95_ci_lower"] = scoredf["score"] - (1.96 * scoredf["standard_error"])
     scoredf = scoredf.merge(annotdf[["pos_id", "Consequence",
-                                     "amino_acid_change"]], on="pos_id")
+                                     "amino_acid_change", "hgvs_p"]], on="pos_id")
 
     scoredf["simplified_consequence"] = scoredf["Consequence"].apply(get_simplified_consequence, ensemblfile=args.ensemblfile)
     scoredf = scoredf.drop(columns=["Consequence"]).rename(columns={'simplified_consequence': 'consequence',
@@ -518,7 +518,7 @@ def main():
     scoredf = scoredf[[
         "chrom", "pos", "ref", "alt", "exon", "target",
         "consequence", "score", "standard_error", "95_ci_upper", "95_ci_lower",
-        "amino_acid_change", "functional_consequence",
+        "amino_acid_change", "hgvs_p", "functional_consequence",
         "functional_consequence_zscore", "variant_qc_flag",
         "snvlib_lib1", "snvlib_lib2",
         "D05_R1_lib1", "D05_R1_lib2",

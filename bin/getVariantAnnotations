@@ -57,7 +57,7 @@ def annotateWithVEP(args, invcf):
     subprocess.run(["vep", "--force_overwrite", "--pick",
                     "--cache", "--dir_cache", 
                     "/net/bbi/vol1/nobackup/external/vep/GRCh38",
-                    "--no_stats",
+                    "--no_stats", "--hgvs", "--mane_select",
                     "-i", invcf,
                     "-o", outfile])
     return outfile
