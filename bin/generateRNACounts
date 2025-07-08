@@ -1,0 +1,318 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+
+import pysam
+import numpy as np
+import pandas as pd
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_target
+import sge_util
+
+edits_by_pos = {}
+
+WT_READ = 1
+MISSING_REQ_EDIT = 2
+TOO_MANY_SNVS = 3
+DEL_READ_WITH_ERRORS = 4
+USEFUL_SNV_READ = 5
+USEFUL_DEL_READ = 6
+BAD_CIGAR = 7
+NO_SNV_FOUND = 8
+
+def get_genomic_pos(vepdf, ccoord):
+    try:
+        return vepdf[vepdf["cDNA_position"] == ccoord]["pos"].values[0]
+    except:
+        return 0
+    
+
+def process_read(readobj, args, cdna_required_edits, cdna_skip_pos):
+    local_edits = {}
+    apairs = readobj.get_aligned_pairs(with_seq=True)
+    for (read_offset, ref_offset, ref_base) in apairs:
+        if ref_offset is None:
+            continue
+        if ref_offset in cdna_skip_pos:
+            if args.verbose:
+                sys.stderr.write("INFO: hit position %d from skip_pos list, skipping\n" % ref_offset)
+            continue
+        if ref_base.islower(): # lowercase means a mismatch between ref and read
+            #print("found mismatch at %d: %s -> %s" % (ref_offset, ref_base, readobj.query_sequence[read_offset]))
+
+            local_edits[ref_offset] = readobj.query_sequence[read_offset]
+            if args.verbose:
+                print("INFO: found mismatch at pos %d: %s --> %s" % (
+                    ref_offset,
+                    ref_base,
+                    readobj.query_sequence[read_offset])
+                )
+    #print(local_edits)
+
+    if len(local_edits) == 0:  # no SNVs found
+        return WT_READ    
+
+    # now make sure the required edits are present
+    ok = True
+    for k in cdna_required_edits.keys():
+        if k in local_edits and local_edits[k] == cdna_required_edits[k]:
+            del local_edits[k]
+        else:
+            ok = False
+            # required edit is missing
+            if args.verbose:
+                sys.stderr.write("INFO: required edit at position %d missing\n" % k)
+            break
+    if not ok:
+        return MISSING_REQ_EDIT
+    
+    if len(local_edits) > 1:
+        if args.verbose:
+            sys.stderr.write("INFO: too many edits remaining\n")
+        return TOO_MANY_SNVS
+    
+    if len(local_edits) == 0:
+        return NO_SNV_FOUND
+    
+    # only one edit remaining, so add it to the df
+    for pos, base in local_edits.items():
+        if pos not in edits_by_pos:
+            break
+        edits_by_pos[pos][base] += 1
+    return USEFUL_SNV_READ
+
+
+def processInputFile(args, cdna_required_edits, cdna_skip_pos, cigar):
+    '''process a BAM file read by read, identifying SNV-containing
+    reads, and extract statistics
+
+    '''
+    if args.maxreads < 1:
+        maxreads = np.Inf
+    else:
+        maxreads = args.maxreads
+    
+    # dict to hold statistics to output later
+    readstats = {'total_reads': 0,
+                 'bad_cigar': 0,
+                 'wild_type': 0,
+                 'missing_req_edit': 0,
+                 'too_many_snvs': 0,
+                 'del_plus_errors': 0,
+                 'no_snv_edit': 0,
+                 'snv_reads': 0,
+                 'deletion_reads': 0,
+    }
+    
+    with pysam.AlignmentFile(args.inputbam) as infile:
+        for record in infile:
+            if readstats['total_reads'] >= maxreads:
+                break
+            readstats['total_reads'] += 1
+
+            result = BAD_CIGAR
+            if record.cigarstring == cigar:
+                result = process_read(record, 
+                                      args, 
+                                      cdna_required_edits,
+                                      cdna_skip_pos)
+
+            if result == BAD_CIGAR:
+                readstats["bad_cigar"] += 1
+            elif result == WT_READ:
+                readstats["wild_type"] += 1
+            elif result == MISSING_REQ_EDIT:
+                readstats["missing_req_edit"] += 1
+            elif result == TOO_MANY_SNVS:
+                readstats["too_many_snvs"] += 1
+            elif result == DEL_READ_WITH_ERRORS:
+                readstats["del_plus_errors"] += 1
+            elif result == NO_SNV_FOUND:
+                readstats["no_snv_edit"] += 1
+            elif result == USEFUL_SNV_READ:
+                readstats["snv_reads"] += 1
+            elif result == USEFUL_DEL_READ:
+                readstats["deletion_reads"] += 1
+            else:
+                print("uh oh", result)
+
+    return readstats
+
+
+def writeSNVOutputFile(target, args, vepdf):
+    '''write the file with SNV counts
+
+    '''
+    chroms = []
+    poses = []
+    coords = []
+    alleles = []
+    counts = []
+
+    for cdna_pos, basedict in edits_by_pos.items():
+        cdna_pos = cdna_pos + 1
+        gcoord = get_genomic_pos(vepdf, cdna_pos)
+
+        if gcoord < target.editstartpos or gcoord > target.editendpos:
+            continue
+        for base, count in basedict.items():
+            chroms.append(target.chrom)
+            poses.append(gcoord)
+            coords.append(cdna_pos)
+            if args.revcomp:
+                if base == "A": base = "T"
+                elif base == "T": base = "A"
+                elif base == "C": base = "G"
+                elif base == "G": base = "C"
+            alleles.append(base)
+            counts.append(count)
+    sampleids = [args.sampleid] * len(poses)
+    targetnames = [args.targetname] * len(poses)
+    df = pd.DataFrame({'sampleid': sampleids,
+                       'target': targetnames,
+                       'chrom': chroms,
+                       'pos': poses,
+                       'cdna_pos': coords,
+                       'allele': alleles,
+                       'count': counts
+                   })
+    df.to_csv(args.snvs, sep="\t", index=False)
+    return
+
+
+def writeStatsFile(target, args, readstats):
+    with open(args.statsfile, 'w') as sfh:
+        sfh.write("sampleid\ttargetname\ttotal_reads\tbad_cigar\twild_type\tmissing_req_edit\t" +
+                  "too_many_snvs\tdel_plus_errors\tno_snv_edit\tsnv_reads\tdeletion_reads\n")
+        sfh.write(args.sampleid + "\t" +
+                  target.targetname + "\t" +
+                  str(readstats["total_reads"]) + "\t" + 
+                  str(readstats["bad_cigar"]) + "\t" +
+                  str(readstats["wild_type"]) + "\t" +
+                  str(readstats["missing_req_edit"]) + "\t" +
+                  str(readstats["too_many_snvs"]) + "\t" +
+                  str(readstats["del_plus_errors"]) + "\t" +
+                  str(readstats["no_snv_edit"]) + "\t" +
+                  str(readstats["snv_reads"]) + "\t" +
+                  str(readstats["deletion_reads"]) + "\n"
+        )
+
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='generateRNACounts', 
+                                     description='extract matrix of edited RNA counts for an SGE sample')
+    parser.add_argument('-n', '--targetname', required=True,
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=True, 
+                        help="File containing list of targets and expected edits, can be auto-detected")
+    parser.add_argument('-C', '--valid_cigar', required=False, default="",
+                        help="CIGAR string of valid reads")
+    parser.add_argument('-f', '--cigarfile', required=False,
+                        default="", 
+                        help="Read top cigar from <cigarfile>")
+    parser.add_argument('-s', '--snvs', required=False, default="", 
+                        help="output SNV counts to <file>")
+    parser.add_argument('-R', '--revcomp', required=False, 
+                        default=False, action="store_true", 
+                        help="Reverse complement all alleles (default False)")
+    parser.add_argument('-l', '--sampleid', required=True, default="unlabeled",
+                        help="Sample identifer (replicate, timepoint)")
+    parser.add_argument('-S', '--statsfile', default='', required=True,
+                        help='Path to summary stats output file to append to')
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    parser.add_argument('-m', '--maxreads', type=int, default=0, 
+                        help='Maximum number of reads to processs')
+    parser.add_argument('inputbam',
+                        help="Path to input BAM file")
+    args = parser.parse_args()
+
+
+    # create Target instance for the specific target name we
+    target = sge_target.Target(args.targetname, args.targetfile)
+    genename = target.gene
+
+    vepfile = "/net/bbi/vol1/data/sge-analysis/etc/%s/%s.snvs.vep.tsv" % (genename, args.targetname)
+    vepdf = sge_util.getVEPdf(vepfile)
+    vepdf.loc[vepdf["cDNA_position"] == "-", "cDNA_position"] = np.nan
+    vepdf = vepdf.dropna(subset=['cDNA_position'])
+    vepdf["cDNA_position"] = vepdf["cDNA_position"].astype(int)
+    minpos = np.nanmin(vepdf["cDNA_position"])
+    maxpos = np.nanmax(vepdf["cDNA_position"])
+
+    # convert the genomic cooordinate skip pos to the cDNA coordinate skip pos
+    cdna_skip_pos = []
+    for pos in target.skip_pos:
+        try:
+            cdna_pos = int(vepdf[vepdf["pos"] == pos]["cDNA_position"].values[0]) - 1
+            cdna_skip_pos.append(cdna_pos)
+            if args.verbose:
+                sys.stderr.write("INFO: Found skip pos %d --> cDNA pos %d\n" % (pos, cdna_pos))
+        except:
+            if args.verbose:
+                sys.stderr.write("INFO: Found skip pos %d --> no cDNA pos\n" % (pos))
+
+    cdna_required_edits = {}
+    for pos in target.required_edits:
+        try:
+            cdna_pos = int(vepdf[vepdf["pos"] == pos]["cDNA_position"].values[0]) - 1
+            base = target.required_edits[pos]
+            if args.revcomp:
+                if base == "A": base = "T"
+                elif base == "T": base = "A"
+                elif base == "C": base = "G"
+                elif base == "G": base = "C"
+            
+            cdna_required_edits[cdna_pos] = base
+            if args.verbose:
+                sys.stderr.write("INFO: Found required edit %d --> cDNA pos %d\n" % (pos, cdna_pos))
+        except:
+            if args.verbose:
+                sys.stderr.write("INFO: Found required edit %d --> no cDNA pos\n" % (pos))
+    
+    if args.verbose:
+        print("INFO: creating empty counts matrix with %d positions" % (
+            maxpos - minpos + 1))
+
+    for x in range(minpos, maxpos + 1, 1):
+        edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
+    
+    cigar = ""
+    if args.cigarfile:
+        try:
+            with open(args.cigarfile) as cin:
+                cigar = cin.readline().lstrip().strip().split(" ")[1]
+                if args.verbose:
+                    sys.stderr.write("INFO: Read cigar string %s from %s\n" % (cigar, args.cigarfile))
+        except:
+            if args.verbose:
+                sys.stderr.write("ERROR: Unable to read cigar string from %s\n" % (args.cigarfile))
+
+    elif args.valid_cigar:
+        cigar = args.valid_cigar
+        if args.verbose:
+            sys.stderr.write("INFO: using %s as valid cigar\n" % args.valid_cigar)
+    
+    else:
+        sys.stderr.write("ERROR: must supply either -C or -f to input CIGAR string\n")
+        sys.exit(-99)
+    
+    readstats = processInputFile(args,
+                                 cdna_required_edits, 
+                                 cdna_skip_pos,
+                                 cigar)
+
+    writeSNVOutputFile(target, args, vepdf)
+    writeStatsFile(target, args, readstats)
+
+    return
+
+
+if __name__ == '__main__':
+    main()
+    
+
