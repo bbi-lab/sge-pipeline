@@ -415,7 +415,10 @@ def writeStatsFile(target, args, readstats):
 
 
 def main():
-    parser = argparse.ArgumentParser('extract matrix of edits for an SGE sample')
+    parser = argparse.ArgumentParser(
+        prog='generateEditCounts',
+        description='extract matrix of edits for an SGE sample'
+    )
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=True, 

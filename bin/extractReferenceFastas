@@ -5,7 +5,10 @@ import subprocess
 
 
 def main():
-    parser = argparse.ArgumentParser('Create the mini reference fasta files for each target')
+    parser = argparse.ArgumentParser(
+        prog='extractReferenceFastas',
+        description='Create the mini reference fasta files for each target'
+    )
     parser.add_argument('-t', '--targets', required=True, help='Path to list of HDR targets')
     parser.add_argument('-o', '--outdir', required=True, help='output directory')
     parser.add_argument('-r', '--ref', required=False, default="", help='path to full reference genome')

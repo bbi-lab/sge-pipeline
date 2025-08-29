@@ -41,12 +41,21 @@ def make_uniformity_figures(target, libfile):
     return chart
 
 
-def make_correlation_figures(target, sampledict):
+def make_correlation_figures(target, sampledict, day, maxcount=100000):
     figlist = []
-    sampledict[target.earlyday] = sorted(sampledict[target.earlyday])
-    sampledict[target.lateday] = sorted(sampledict[target.lateday])
-    for index, repl1 in enumerate(sampledict[target.earlyday]):
-        for repl2 in sampledict[target.earlyday][index+1:]:
+    for index, repl1 in enumerate(sampledict[day]):
+        fn = repl1.split("/")[-1]
+        parts = fn.split(".")[0].split("_")
+        repl = parts[2]
+        if repl == 'NC': # throw out the negative control
+            continue
+        for repl2 in sampledict[day][index+1:]:
+            fn = repl2.split("/")[-1]
+            parts = fn.split(".")[0].split("_")
+            repl = parts[2]
+            if repl == 'NC': # throw out the negative control
+                continue
+
             s1counts = sge_counts.getSNVCounts(repl1, augment=False, pseudocount=0)
             s2counts = sge_counts.getSNVCounts(repl2, augment=False, pseudocount=0)
             s1counts = s1counts.rename(columns={'count': 'count_s1'})
@@ -57,12 +66,16 @@ def make_correlation_figures(target, sampledict):
             tmpdf = tmpdf[tmpdf["ref"] != tmpdf["allele"]]
             tmpdf = tmpdf[~tmpdf["pos"].isin(target.required_edits)]
             tmpdf = tmpdf[~tmpdf["pos"].isin(target.skip_pos)]
-
+            tmpdf = tmpdf[tmpdf["count_s1"] <= maxcount]
+            tmpdf = tmpdf[tmpdf["count_s2"] <= maxcount]
+            tmpdf = tmpdf[tmpdf["count_s1"] > 0]
+            tmpdf = tmpdf[tmpdf["count_s2"] > 0]
+            
             # compute SNV correlation
             mycorr = tmpdf[["count_s1", "count_s2"]].corr().iloc[0,1]
             p = alt.Chart(tmpdf).mark_point().encode(
-                x=alt.X("count_s1:Q", title="%s"% repl1.split("/")[-1].split(".")[0]),
-                y=alt.Y("count_s2:Q", title="%s"% repl2.split("/")[-1].split(".")[0]),
+                x=alt.X("count_s1:Q", title="%s"% repl1.split("/")[-1].split(".")[0]).scale(type='log'),
+                y=alt.Y("count_s2:Q", title="%s"% repl2.split("/")[-1].split(".")[0]).scale(type='log'),
 
             )
             t = alt.Chart({'values':[{}]}).mark_text(
@@ -73,41 +86,11 @@ def make_correlation_figures(target, sampledict):
                 text=alt.value(f"r: {mycorr:.3f}"),
             )
             figlist.append(p + t + p.transform_regression("count_s1", "count_s2").mark_line())
-
     
-    for index, repl1 in enumerate(sampledict[target.lateday]):
-        for repl2 in sampledict[target.lateday][index+1:]:
-            s1counts = sge_counts.getSNVCounts(repl1, augment=False, pseudocount=0)
-            s2counts = sge_counts.getSNVCounts(repl2, augment=False, pseudocount=0)
-            s1counts = s1counts.rename(columns={'count': 'count_s1'})
-            s2counts = s2counts.rename(columns={'count': 'count_s2'})
-            tmpdf = s1counts.merge(s2counts, on=["chrom", "pos", "allele"])
-            tmppf = tmpdf[(tmpdf["pos"] >= target.editstartpos) & (tmpdf["pos"] <= target.editendpos)]
-            tmpdf = tmpdf.merge(target.refdf, on="pos")
-            tmpdf = tmpdf[tmpdf["ref"] != tmpdf["allele"]]
-            tmpdf = tmpdf[~tmpdf["pos"].isin(target.required_edits)]
-            tmpdf = tmpdf[~tmpdf["pos"].isin(target.skip_pos)]
-
-            # compute SNV correlation
-            mycorr = tmpdf[["count_s1", "count_s2"]].corr().iloc[0,1]
-            p = alt.Chart(tmpdf).mark_point().encode(
-                x=alt.X("count_s1:Q", title="%s"% repl1.split("/")[-1].split(".")[0]),
-                y=alt.Y("count_s2:Q", title="%s"% repl2.split("/")[-1].split(".")[0]),
-
-            )
-            t = alt.Chart({'values':[{}]}).mark_text(
-                align="left", baseline="top"
-                ).encode(
-                x=alt.value(5),  # pixels from left
-                y=alt.value(5),  # pixels from top
-                text=alt.value(f"r: {mycorr:.3f}"),
-            )
-            figlist.append(p + t + p.transform_regression("count_s1", "count_s2").mark_line())
-
     return figlist
 
 
-def make_counts_figures(target, sampledict, day):
+def make_counts_figures(target, sampledict, day, maxcount=100000):
     figlist = []
     sampledict[day] = sorted(sampledict[day])
     nsamples = len(sampledict[day])
@@ -118,6 +101,7 @@ def make_counts_figures(target, sampledict, day):
         tmpdf = tmpdf[tmpdf["ref"] != tmpdf["allele"]]
         tmpdf = tmpdf[~tmpdf["pos"].isin(target.required_edits)]
         tmpdf = tmpdf[~tmpdf["pos"].isin(target.skip_pos)]
+        tmpdf = tmpdf[tmpdf["count"] <= maxcount]
         if index == nsamples - 1:
             a = alt.Chart(tmpdf, height=150, width=1000).mark_point(filled=True, size=50).encode(
                 x=alt.X(
@@ -155,9 +139,10 @@ def make_counts_figures(target, sampledict, day):
     return figlist
 
 
-def make_log2ratio_figures(target, sampledict, vepfile):
+def make_log2ratio_figures(target, sampledict, vepfile, day):
     figlist = []
-    corrfigs = []
+
+    # load starting library
     libfile = sampledict['D00'][0]
     df = sge_counts.getSNVCounts(libfile,
                                  augment=True,
@@ -171,25 +156,32 @@ def make_log2ratio_figures(target, sampledict, vepfile):
 
     cols_to_plot = []
         
-    for snvfile in sorted(sampledict[target.lateday]):
+    for snvfile in sorted(sampledict[day]):
+        fn = snvfile.split("/")[-1]
+        parts = fn.split(".")[0].split("_")
+        repl = parts[2]
+        if repl == 'NC': # throw out the negative control
+            continue
+        
         tmpdf = sge_counts.getSNVCounts(snvfile,
                                         augment=False,
                                         pseudocount=1)
         statsfile = snvfile.replace(".snvs.tsv", ".readstats.tsv")
         statsdf = sge_counts.getReadStats(statsfile, augment=False)
-        sampleid = tmpdf["sampleid"][0]
+        #sampleid = tmpdf["sampleid"][0]
+        sampleid = snvfile.replace(".snvs.tsv", "").split("/")[-1]
         parts = sampleid.split("_")
         repl = parts[2]
-        countcol = "%s_%s" % (target.lateday, repl)
+        countcol = "%s_%s" % (day, repl)
         tmpdf = tmpdf.rename(columns={'count': countcol})
         freqcol = countcol + "_freq"
         normval = statsdf["snv_reads"][0]
         tmpdf[freqcol] = tmpdf[countcol] / normval
         df = df.merge(tmpdf[["chrom", "pos", "allele", countcol, freqcol]], on=["chrom", "pos", "allele"])
-        freqcol = "%s_%s_freq" % (target.lateday, repl)
-        ratiocol = "%s_%s_over_lib" % (target.lateday, repl)
+        freqcol = "%s_%s_freq" % (day, repl)
+        ratiocol = "%s_%s_over_lib" % (day, repl)
         df[ratiocol] = df[freqcol] / df['snvlib_freq']
-        log2col = "%s_%s_over_lib_log2" % (target.lateday, repl)
+        log2col = "%s_%s_over_lib_log2" % (day, repl)
         df[log2col] = np.log2(df[ratiocol])
         cols_to_plot.append(log2col)
     
@@ -255,45 +247,12 @@ def make_log2ratio_figures(target, sampledict, vepfile):
                 ),
             )
         figlist.append(a)
-
-    # correlation figures
-    for conseq in ["synonymous", "missense", "stop", "splice", "intron"]:
-        dfsmall = df[df["shortconsequence"] == conseq]
-        for index, repl1 in enumerate(cols_to_plot):
-            title1 = repl1.replace("_over_lib_log2", "")
-            for repl2 in cols_to_plot[index+1:]:
-                title2 = repl2.replace("_over_lib_log2", "")
-                # compute SNV correlation
-                mycorr = dfsmall[[repl1, repl2]].corr().iloc[0,1]
-                p = alt.Chart(dfsmall,
-                    title=alt.TitleParams(
-                        " ",
-                        subtitle=conseq,
-                    )
-                ).mark_point().encode(
-                    x=alt.X("%s:Q" % repl1, title=title1),
-                    y=alt.Y("%s:Q" % repl2, title=title2),
-                )
-                t = alt.Chart({'values':[{}]}).mark_text(
-                    align="left", baseline="top"
-                    ).encode(
-                    x=alt.value(5),  # pixels from left
-                    y=alt.value(5),  # pixels from top
-                    text=alt.value(f"r: {mycorr:.3f}"),
-                )
-                corrfigs.append(
-                    p + t + p.transform_regression(
-                        repl1, repl2
-                    ).mark_line(
-                    ).properties(
-                    )
-                )
-
+        
     meltdf = pd.melt(df, id_vars=['target', 'gene', 'pos_id', 'shortconsequence'], value_vars=cols_to_plot)
     repfig = alt.Chart(
         meltdf[~meltdf["value"].isna()],
         height=200,
-        width=1400
+        width=1000
     ).mark_point(
         filled=True, size=50
     ).encode(
@@ -306,7 +265,7 @@ def make_log2ratio_figures(target, sampledict, vepfile):
         ),
         y=alt.Y(
             'value:Q',
-            title="Replicate log2 ratios, day 12 or 13",
+            title="Replicate log2 ratios, day %s" % day,
             scale=alt.Scale()
         ),
         color=alt.Color(
@@ -317,7 +276,8 @@ def make_log2ratio_figures(target, sampledict, vepfile):
             )
         )
     )
-    return figlist, corrfigs, repfig
+    figlist.append(repfig)
+    return figlist
 
 
 def build_figure(target, args):
@@ -330,140 +290,73 @@ def build_figure(target, args):
     try:
         vepfile = "/net/bbi/vol1/data/sge-analysis/etc/%s/%s.snvs.vep.tsv" % (target.gene, target.targetname)
         chart = make_uniformity_figures(target, sampledict["D00"][0])
-        plots = make_correlation_figures(target, sampledict)
         sampledict = target.getSNVSampleList(args.countsdir, include_neg=True)            
+        days = sorted(sampledict.keys())
+        if days[0] == "D00":
+            days = days[1:]
+        countsplots = {}
+        correlationplots = {}
+        logratioplots = {}
+        for d in days:
+            countsplots[d] = make_counts_figures(target, sampledict, d)
+            correlationplots[d] = make_correlation_figures(target, sampledict, d, args.maxcount)
+            logratioplots[d] = make_log2ratio_figures(target, sampledict, vepfile, d)
             
-        earlycountsplots = make_counts_figures(target, sampledict, target.earlyday)
-        latecountsplots = make_counts_figures(target, sampledict, target.lateday)
-        logfigures, corrfigs, repfig = make_log2ratio_figures(target, sampledict, vepfile)
-            
-        nextind = 0
-        print(len(sampledict[target.earlyday]))
-        if len(sampledict[target.earlyday]) in (0, 1, 2):
-            cplotstop = ()
-        elif len(sampledict[target.earlyday]) == 3:
-            cplotstop = (plots[0])
-            nextind = 1
-        elif len(sampledict[target.earlyday]) > 3:
-            cplotstop = (plots[0] | plots[1] | plots[2])
-            nextind = 3
-                
-        if len(sampledict[target.lateday]) == 1:
-            cplotsbottom = ()
-        elif len(sampledict[target.lateday]) == 2:
-            cplotsbottom = (plots[nextind])
-        elif len(sampledict[target.lateday]) == 3:
-            cplotsbottom = (plots[nextind] | plots[nextind+1] | plots[nextind+2])
-                
-        cplots = (cplotstop & cplotsbottom
-                  ).properties(
-                  title='Pearson correlation by day'
-                  )
-            
-        # day 5 counts figures
-        if len(earlycountsplots) == 1:
-            earlycountslayout = (earlycountsplots[0]
-                                 ).resolve_scale(
-                                     y='shared'
-                                 ).properties(
-                                     title="Counts per variant in each replicate"
-                                 )
-        elif len(earlycountsplots) == 2:
-            earlycountslayout = (earlycountsplots[0] & 
-                                 earlycountsplots[1]
-                                 ).resolve_scale(
-                                     y='shared'
-                                 ).properties(
-                                     title="Counts per variant in each replicate"
-                                 )
-        elif len(earlycountsplots) == 3:
-            earlycountslayout = (earlycountsplots[0] & 
-                                 earlycountsplots[1] & 
-                                 earlycountsplots[2]
-                                 ).resolve_scale(
-                                     y='shared'
-                                 ).properties(
-                                     title="Counts per variant in each replicate"
-                                 )
-        elif len(earlycountsplots) == 4:
-            earlycountslayout = (earlycountsplots[0] & 
-                                 earlycountsplots[1] & 
-                                 earlycountsplots[2] &
-                                 earlycountsplots[3]
-                                 ).resolve_scale(
-                                     y='shared'
-                                 ).properties(
-                                     title="Counts per variant in each replicate"
-                                 )
-                
-        # day 13 counts figures
-        if len(latecountsplots) == 1:
-            latecountslayout = (latecountsplots[0]
-                                ).resolve_scale(
-                                    y='shared'
-                                )
-            
-        elif len(latecountsplots) == 2:
-            latecountslayout = (latecountsplots[0] & 
-                                latecountsplots[1] 
-                                ).resolve_scale(
-                                    y='shared'
-                                )
-            
-        elif len(latecountsplots) == 3:
-            latecountslayout = (latecountsplots[0] & 
-                                latecountsplots[1] & 
-                                latecountsplots[2]
-                                ).resolve_scale(
-                                    y='shared'
-                                )
+        # mws edits June 10
+        corrlayouts = []
+        for d in days:
+            layout = correlationplots[d][0]
+            for cplot in correlationplots[d][1:]:
+                layout |= cplot
+            layout = layout.properties(
+                title='Pearson correlation. day %s' % d
+            )
+            corrlayouts.append(layout)
+        
 
-        # log2 ratio figures
-        if len(logfigures) == 1:
-            logsplotlayout = (logfigures[0] 
-                              ).properties(
-                                  title=alt.TitleParams(
-                                      text='log2 ratios per variant, day 13'
-                                  )
-                              ).resolve_scale(
-                                  y='shared'
-                              )
-            
-        elif len(logfigures) == 2:
-            logsplotlayout = (logfigures[0] & 
-                              logfigures[1]
-                              ).properties(
-                                  title=alt.TitleParams(
-                                      text='log2 ratios per variant, day 13'
-                                  )
-                              ).resolve_scale(
-                                  y='shared'
-                              )
-        elif len(logfigures) == 3:
-            logsplotlayout = (logfigures[0] & 
-                              logfigures[1] & 
-                              logfigures[2]
-                              ).properties(
-                                  title=alt.TitleParams(
-                                      text='log2 ratios per variant, day 13'
-                                  )
-                              ).resolve_scale(
-                                  y='shared'
-                              )
+        countslayouts = []
+        for d in days:
+            layout = countsplots[d][0]
+            for cplot in countsplots[d][1:]:
+                layout &= cplot
+            layout = layout.resolve_scale(
+                y='shared'
+            ).properties(
+                title="Counts per variant per replicate, day %s" % d
+            )
+            countslayouts.append(layout)
+
+        loglayouts = []
+        for d in days:
+            layout = logratioplots[d][0]
+            for lplot in logratioplots[d][1:]:
+                layout &= lplot
+            layout = layout.properties(
+                title=alt.TitleParams(
+                    text='log2 ratios per variant, day %s' % d
+                )
+            ).resolve_scale(
+                y='shared'
+            )
+            loglayouts.append(layout)
             
         fullplot = (chart.properties(
             title=alt.TitleParams(
                 text=" ",
                 subtitle='log2 ratios per variant, day 13'
             )
-        ) & 
-        cplots & 
-        earlycountslayout & 
-        latecountslayout & 
-        logsplotlayout &
-        repfig #&
+        ))
+        for l in corrlayouts:
+            fullplot &= l
+
+        for l in countslayouts:
+            fullplot &= l
+        for l in loglayouts:
+            fullplot &= l
+
+        #fullplot &= repfig #&
         #corratiolayout
-        ).properties(
+        fullplot = fullplot.properties(
             title=alt.TitleParams(
                 text=["QC and statistics for %s" % target.targetname.replace("_", " "), " "],
                 subtitle="Library uniformity",
@@ -496,14 +389,17 @@ def build_figure(target, args):
 
 
 def main():
-    parser = argparse.ArgumentParser('create QC figures for an SGE target as an HTML page')
+    parser = argparse.ArgumentParser(prog='makeQCfigures',
+                                     description='create QC figures for an SGE target as an HTML page')
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=False, default="",
                         help="File containing list of targets and expected edits (def. /net/bbi/vol1/data/sge-analysis/etc/<gene>/targets.tsv)")
-    parser.add_argument('-c', '--countsdir', required=False, default="/net/bbi/vol1/data/sge-analysis/nobackup/counts/",
-                        help="Directory for counts output. Gene-specific subdirectories will be appended automatically")
+    parser.add_argument('-c', '--countsdir', required=True,
+                        help="Directory containing counts files")
     parser.add_argument('-o', '--outfile', required=True, help="Output file, must end with .html (html format) or .png (PNG format)")
+    parser.add_argument('-m', '--maxcount', required=False, default=100000, type=int,
+                        help="Filter out any positions with counts above <maxcount>")
     
     args = parser.parse_args()
 

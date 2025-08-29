@@ -120,8 +120,6 @@ class Target:
             samples[day].append(fullfn)
         self.snvsamples = samples
         days = sorted(samples.keys())
-        self.earlyday = days[1]
-        self.lateday = days[2]
 
         return samples
     

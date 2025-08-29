@@ -64,7 +64,10 @@ def annotateWithVEP(args, invcf):
 
 
 def main():
-    parser = argparse.ArgumentParser('write VEP annotations for all variants')
+    parser = argparse.ArgumentParser(
+        prog='getVariantAnnotations',
+        description='write VEP annotations for all variants'
+    )
     parser.add_argument('-n', '--targetname', required=False, default="",
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=True, 

@@ -66,7 +66,10 @@ def saveDelFigure(args, plotdf, figfile):
 
 
 def main():
-    parser = argparse.ArgumentParser('create visualization of library uniformity for SGE target')
+    parser = argparse.ArgumentParser(
+        prog='qcSGELibrary',
+        description='create visualization of library uniformity for SGE target'
+    )
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=False, 
