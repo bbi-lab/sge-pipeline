@@ -82,7 +82,10 @@ def writeVariantOutputFile(args, readstats):
 
 
 def main():
-    parser = argparse.ArgumentParser('extract edit counts for an SGE sample by string matching against defined variant sequences')
+    parser = argparse.ArgumentParser(
+        prog='variantCountsFromFasta',
+        description='extract edit counts for an SGE sample by string matching against defined variant sequences'
+    )
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- e.g., BARD1_X4A")
     parser.add_argument("-o", "--output", required=True, 

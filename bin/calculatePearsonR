@@ -9,7 +9,10 @@ sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
 import sge_util
 
 def main():
-    parser = argparse.ArgumentParser('calculate Pearson r of SNV counts between replicates')
+    parser = argparse.ArgumentParser(
+        prog='calculatePearsonR',
+        description='calculate Pearson r of SNV counts between replicates'
+    )
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=True, 

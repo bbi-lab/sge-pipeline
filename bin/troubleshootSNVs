@@ -175,7 +175,10 @@ def printStats(readstats):
     
 
 def main():
-    parser = argparse.ArgumentParser('troubleshoot issues with SNV counts')
+    parser = argparse.ArgumentParser(
+        prog='troubleshootSNVs',
+        description='troubleshoot issues with SNV counts'
+    )
     parser.add_argument('-n', '--targetname', required=True,
                         help="Target name -- must match entry in <targetfile>")
     parser.add_argument('-t', '--targetfile', required=True, 
