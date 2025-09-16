@@ -130,7 +130,7 @@ def handle_homopolymers(target, args, readobj):
                 return BAD_CIGAR
 
     if args.verbose:
-            print("INFO: local edits:", local_edits)
+        print("INFO: local edits:", local_edits)
 
     if len(local_edits) == 0:  # no SNVs found
         return WT_READ    
@@ -222,7 +222,6 @@ def process_del_read(target, args, readobj):
 
     if len(local_edits) > 0:
         # if there are any mismatches left, then we have errors and we throw the read out
-        print(local_edits)
         return DEL_READ_WITH_ERRORS
 
     # we have a good deletion!
