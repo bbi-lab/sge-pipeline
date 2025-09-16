@@ -72,6 +72,12 @@ def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     scoredf["functional_consequence"] = "indeterminate"
     scoredf.loc[scoredf["gmm_density_abnormal"] >= args.gmmthresh, "functional_consequence"] = "functionally_abnormal"
     scoredf.loc[scoredf["gmm_density_normal"] >= args.gmmthresh, "functional_consequence"] = "functionally_normal"
+
+    # avoid the counter-intuitive situation where some high-scoring variants could get abnormal labels owing
+    # to heavy tails in the abnormal distribution
+    normalmax = scoredf[(scoredf["functional_consequence"] == "functionally_normal") &
+                        (scoredf["variant_qc_flag"] == "PASS")]["score"].max()
+    scoredf.loc[scoredf["score"] >= normalmax, "functional_consequence"] = "functionally_normal"
     
     return scoredf
 
