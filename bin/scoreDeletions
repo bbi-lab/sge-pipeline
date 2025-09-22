@@ -96,31 +96,6 @@ def makeFunctionalClasses(args, scoredf):
     scoredf.loc[scoredf["score"] >= score_n_95, "functional_consequence"] = "functionally_normal"
 
     return scoredf
-
-
-def getHGVSp(veprow):
-    vepstring = veprow["Extra"]
-    try:
-        pdot = ""
-        offset = False
-        parts = vepstring.split(";")
-        for p in parts:
-            k, v = p.split("=")
-            if k == "HGVSp":
-                pdot = v.replace("%3D", "=")
-            elif k == "HGVS_OFFSET":
-                offset = True
-                
-    except:
-        return ["", ""]
-
-    if pdot:
-        if offset is False:
-            return [pdot, "yes"]
-        else:
-            return [pdot, "no"]
-    else:
-        return ["", ""]
     
 
 def getAnnots(args, vepdir, targetlist):
@@ -131,7 +106,6 @@ def getAnnots(args, vepdir, targetlist):
         vepfile = os.path.join(vepdir, "%s.dels.vep.tsv" % target)
         vepdf = sge_util.getVEPdf(vepfile, type="del")
         vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
-        vepdf[["hgvs_p", "is_canonical_hgvs_p"]] = vepdf.apply(getHGVSp, axis=1, result_type='expand')
 
         annotdf = pd.concat(
             [
