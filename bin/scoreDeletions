@@ -87,13 +87,41 @@ def makeFunctionalClasses(args, scoredf):
     # now we get the scores that are the closest to the (n)ormal and (a)bnormal thresholds
     score_n_95 = closest_row_n['score']
     score_a_95 = closest_row_a['score']
-    
+    if args.verbose:
+        sys.stderr.write("INFO: abnormal score threshold = %f\n" % score_a_95)
+        sys.stderr.write("INFO: normal score threshold = %f\n" % score_n_95)
+        
     scoredf["functional_consequence"] = "indeterminate"
-    scoredf.loc[scoredf["score"] >= score_a_95, "functional_consequence"] = "functionally_abnormal"
+    scoredf.loc[scoredf["score"] <= score_a_95, "functional_consequence"] = "functionally_abnormal"
     scoredf.loc[scoredf["score"] >= score_n_95, "functional_consequence"] = "functionally_normal"
 
     return scoredf
 
+
+def getHGVSp(veprow):
+    vepstring = veprow["Extra"]
+    try:
+        pdot = ""
+        offset = False
+        parts = vepstring.split(";")
+        for p in parts:
+            k, v = p.split("=")
+            if k == "HGVSp":
+                pdot = v.replace("%3D", "=")
+            elif k == "HGVS_OFFSET":
+                offset = True
+                
+    except:
+        return ["", ""]
+
+    if pdot:
+        if offset is False:
+            return [pdot, "yes"]
+        else:
+            return [pdot, "no"]
+    else:
+        return ["", ""]
+    
 
 def getAnnots(args, vepdir, targetlist):
     if args.verbose:
@@ -103,6 +131,8 @@ def getAnnots(args, vepdir, targetlist):
         vepfile = os.path.join(vepdir, "%s.dels.vep.tsv" % target)
         vepdf = sge_util.getVEPdf(vepfile, type="del")
         vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
+        vepdf[["hgvs_p", "is_canonical_hgvs_p"]] = vepdf.apply(getHGVSp, axis=1, result_type='expand')
+
         annotdf = pd.concat(
             [
                 annotdf,
