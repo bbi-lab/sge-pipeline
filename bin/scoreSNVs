@@ -102,9 +102,11 @@ def saveSNVScores(args, df):
     return
                   
 
-def getAnnots(args, vepdir, targetlist):
+def getAnnots(args, vepdir, targetlist, targetfile):
     '''read the annotations from the VEP output for each tile, and return a dataframe
     '''
+    # create a set to hold protein positions where we want to apply a warning
+    warning_pos = set()
     if args.verbose:
         sys.stderr.write("INFO: Loading annotation files for variants from %s\n" % vepdir)
     annotdf = pd.DataFrame()
@@ -114,6 +116,13 @@ def getAnnots(args, vepdir, targetlist):
         vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
         vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
         vepdf["pos_id"] = vepdf["pos"] + ":" + vepdf["allele"]
+        t = sge_target.Target(target, targetfile)
+        for pos in t.required_edits:
+            protein_pos = vepdf[vepdf["pos"] == str(pos)]["Protein_position"].values[0]
+            if protein_pos != '-':
+                warning_pos.add(str(protein_pos))
+                if args.verbose:
+                    sys.stderr.write("INFO: identified required edit at protein position %d\n" % int(protein_pos))
         annotdf = pd.concat(
             [
                 annotdf,
@@ -121,10 +130,13 @@ def getAnnots(args, vepdir, targetlist):
                     ["chrom", "pos", "allele",
                      "pos_id", "amino_acid_change",
                      "Consequence", "hgvs_p",
-                     "CDS_position", "cDNA_position"]
+                     "CDS_position", "cDNA_position",
+                     "Protein_position"]
                 ]
             ]
         )
+    annotdf["warn_codon"] = ""
+    annotdf.loc[annotdf["Protein_position"].astype(str).isin(warning_pos), "warn_codon"] = "WARN"
     annotdf = annotdf.drop_duplicates(subset=["pos_id"])
     return annotdf
 
@@ -573,7 +585,7 @@ def main():
     if args.verbose:
         sys.stderr.write("INFO: Will exclude %d positions from nonsense threshold computation\n" % len(exclude_nonsense_coords))
 
-    annotdf = getAnnots(args, vepdir, targetlist)
+    annotdf = getAnnots(args, vepdir, targetlist, targetfile)
     countsdf = pd.DataFrame()
     scoredf = pd.DataFrame()
     for t in targetlist:
@@ -606,7 +618,8 @@ def main():
     scoredf = scoredf.merge(
         annotdf[["pos_id", "Consequence",
                  "amino_acid_change", "hgvs_p",
-                 "CDS_position", "cDNA_position"]],
+                 "CDS_position", "cDNA_position",
+                 "warn_codon"]],
         on="pos_id"
     )
 
@@ -622,6 +635,7 @@ def main():
     )
     
     scoredf["variant_qc_flag"] = "PASS"
+    scoredf.loc[scoredf["warn_codon"] == "WARN", "variant_qc_flag"] = "WARN"
     if scoredf.shape[0] >= args.minfunc:
         if args.verbose:
             sys.stderr.write(
