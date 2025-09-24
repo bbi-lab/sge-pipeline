@@ -123,6 +123,13 @@ def getAnnots(args, vepdir, targetlist, targetfile):
                 warning_pos.add(str(protein_pos))
                 if args.verbose:
                     sys.stderr.write("INFO: identified required edit at protein position %d\n" % int(protein_pos))
+        for pos in t.skip_pos:
+            protein_pos = vepdf[vepdf["pos"] == str(pos)]["Protein_position"].values[0]
+            if protein_pos != '-':
+                warning_pos.add(str(protein_pos))
+                if args.verbose:
+                    sys.stderr.write("INFO: identified skipped position (cell line SNV?) at protein position %d\n"
+                                     % int(protein_pos))
         annotdf = pd.concat(
             [
                 annotdf,
