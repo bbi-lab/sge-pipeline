@@ -471,6 +471,11 @@ def main():
         '-s', '--snvdf', required=False, type=str,
         help="TSV containing SNV scores for the same gene, from which functional class thresholds are taken"
     )
+    parser.add_argument(
+        '-F', '--skipfunctional',
+        required=False, default=False,
+        action="store_true", help="Skip functional class assignment"
+    )
     args = parser.parse_args()
 
 
@@ -599,7 +604,7 @@ def main():
     if args.outputcounts:
         saveCounts(args, countsdf)
 
-    if args.snvdf:
+    if args.snvdf and not args.skipfunctional:
         scoredf = makeFunctionalClasses(
             args,
             scoredf,
