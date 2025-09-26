@@ -40,6 +40,12 @@ def get_simplified_consequence(vep_terms, ensemblfile):
     return matched_terms[0] if matched_terms else "Unknown"
 
 
+def find_nearest(array, value):
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return [array[idx], idx]
+
+
 def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     mean_nonsense = scoredf[(scoredf["consequence"].isin(["stop_gained",])) &
                             (scoredf["variant_qc_flag"] == "PASS") &
@@ -78,7 +84,56 @@ def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     normalmax = scoredf[(scoredf["functional_consequence"] == "functionally_normal") &
                         (scoredf["variant_qc_flag"] == "PASS")]["score"].max()
     scoredf.loc[scoredf["score"] >= normalmax, "functional_consequence"] = "functionally_normal"
+
+    # get the location and scale of the estimated GMM components
+    mean_abnormal = gm.means_[0][0]
+    mean_normal = gm.means_[1][0]
+    sd_abnormal = np.sqrt(gm.covariances_[0][0][0])
+    sd_normal = np.sqrt(gm.covariances_[1][0][0])
+
+    # now we try to approximate the thresholds 
+    diff_normal = (scoredf['gmm_density_normal'] - args.gmmthresh).abs()
+    closest_index = diff_normal.idxmin()
+    closest_row_normal = scoredf.loc[closest_index]
+
+    diff_abnormal = (scoredf['gmm_density_abnormal'] - args.gmmthresh).abs()
+    closest_index = diff_abnormal.idxmin()
+    # Retrieve the row with the closest value
+    closest_row_abnormal = scoredf.loc[closest_index]
+    # now we get the scores that are the closest to the normal and abnormal thresholds
+    closest_score_normal = closest_row_normal['score']
+    closest_score_abnormal = closest_row_abnormal['score']
+    if args.verbose:
+        sys.stderr.write("INFO: abnormal score threshold starting estimate: %f\n" % closest_score_abnormal)
+        sys.stderr.write("INFO: normal score threshold starting estimate: %f\n" % closest_score_normal)
+
+    # generate and score a bunch of tightly-spaced candidates
+    candidates_abnormal = np.linspace(closest_score_abnormal - 0.01, closest_score_abnormal + 0.01, 10000)
+    preds_abnormal = gm.predict_proba(candidates_abnormal.reshape(-1, 1))
+    closest_density, index = find_nearest(preds_abnormal[:, 0], args.gmmthresh)
+    thresh_abnormal = candidates_abnormal[index]
+    if args.verbose:
+        sys.stderr.write("INFO: best abnormal score threshold = %f resulting in density %f\n" % (thresh_abnormal, closest_density))
     
+    # generate and score a bunch of tightly-spaced candidates
+    candidates_normal = np.linspace(closest_score_normal - 0.01, closest_score_normal + 0.01, 10000)
+    preds_normal = gm.predict_proba(candidates_normal.reshape(-1, 1))
+    closest_density, index = find_nearest(preds_normal[:, 1], args.gmmthresh)
+    thresh_normal = candidates_normal[index]
+    if args.verbose:
+        sys.stderr.write("INFO: best normal score threshold = %f resulting in density %f\n" % (thresh_normal, closest_density))
+
+    if args.outputmodel:
+        saveModelParameters(
+            args,
+            mean_abnormal,
+            mean_normal,
+            sd_abnormal,
+            sd_normal,
+            thresh_abnormal,
+            thresh_normal
+        )
+
     return scoredf
 
 
@@ -93,6 +148,24 @@ def saveCounts(args, df):
     if args.verbose:
         sys.stderr.write("INFO: wrote counts to %s\n" % outfile)
     return
+
+
+def saveModelParameters(args, mean_abnormal, mean_normal, sd_abnormal, sd_normal, thresh_abnormal, thresh_normal):
+    with open(args.outputmodel, "w") as outfile:
+        outfile.write("gmm_thresh\tmean_abnormal\tmean_normal\tsd_abnormal\tsd_normal\tthresh_abnormal\tthresh_normal\n")
+        outfile.write("%f\t%f\t%f\t%f\t%f\t%f\t%f\n" % (
+            args.gmmthresh,
+            mean_abnormal,
+            mean_normal,
+            sd_abnormal,
+            sd_normal,
+            thresh_abnormal,
+            thresh_normal)
+        )            
+    if args.verbose:
+        sys.stderr.write("INFO: wrote model parameters to %s\n" % args.outputmodel)
+    return
+
 
 def saveSNVScores(args, df):
     outfile = args.outfile
@@ -441,6 +514,10 @@ def main():
         help="Path to output TSV file of per-tile counts for each replicate"
     )
     parser.add_argument(
+        '-E', '--outputmodel', required=False, default="",
+        help="Path to output TSV file of GMM component means, variances, and class thresholds"
+    )    
+    parser.add_argument(
         '-g', '--gene', required=True,
         help='Gene to score'
     )
@@ -671,6 +748,7 @@ def main():
     if args.outputcounts:
         saveCounts(args, countsdf)
 
+        
     scoredf = scoredf[[
         "chrom", "pos", "ref", "alt", "exon", "target",
         "consequence", "score", 
