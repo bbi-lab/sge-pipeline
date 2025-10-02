@@ -1,0 +1,628 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+import pandas as pd
+import numpy as np
+import os
+import string
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_util
+import sge_counts
+import sge_target
+
+from scipy.stats import norm
+from scipy.stats import linregress
+import loess.loess_1d
+
+
+# Function to assign the most important SO summary term
+def get_simplified_consequence(vep_terms, ensemblfile):
+    consequence_df = pd.read_csv(ensemblfile, sep='\t')
+    # Create a dictionary mapping terms to their SO summary term (prioritizing importance)
+    mapping_dict = (
+        consequence_df.sort_values(by="Importance", ascending=False)
+        .groupby("VEP output term")[["SO summary term", "Importance"]]
+        .first()
+        .to_dict()["SO summary term"]
+    )
+    if not isinstance(vep_terms, str):  
+        return "Unknown"
+    terms = vep_terms.split(',')  
+    matched_terms = [mapping_dict.get(term.strip()) for term in terms if term.strip() in mapping_dict]
+    
+    return matched_terms[0] if matched_terms else "Unknown"
+
+
+def saveCounts(args, df):
+    #df = df.rename(columns={'allele': 'alt'})
+    countcols = [c for c in df.columns if c.startswith("D") and c[-2:] in ("R1", "R2", "R3")]
+    outcols = ["target", "chrom", "start", "end", "snvlib_count"]
+    outcols.extend(countcols)
+    df = df[outcols]
+    outfile = args.outputcounts
+    df.to_csv(outfile, index=False, sep="\t")
+    if args.verbose:
+        sys.stderr.write("INFO: wrote counts to %s\n" % outfile)
+    return
+
+
+def saveDelScores(args, df):
+    outfile = args.outfile
+    df.to_csv(
+        outfile,
+        index=False,
+        sep="\t",
+        float_format='%g'
+    )
+    if args.verbose:
+        sys.stderr.write("INFO: wrote deletion scores to %s\n" % outfile)
+    return
+
+
+def makeFunctionalClasses(args, scoredf):
+    snvdf = pd.read_csv(
+        args.snvdf,
+        sep="\t",
+        header=0
+    )
+    # find the GMM thresholds
+    target_value = 0.950
+    # Calculate the absolute difference for the Normal (N) density
+    diffN = (snvdf['gmm_density_normal'] - target_value).abs()
+    # Find the index of the minimum difference
+    closest_index = diffN.idxmin()
+    # Retrieve the row with the closest value
+    closest_row_n = snvdf.loc[closest_index]
+
+    # now repeat that for the abnormal density
+    # Calculate the absolute difference
+    diffA = (snvdf['gmm_density_abnormal'] - target_value).abs()
+    # Find the index of the minimum difference
+    closest_index = diffA.idxmin()
+    # Retrieve the row with the closest value
+    closest_row_a = snvdf.loc[closest_index]
+
+    # now we get the scores that are the closest to the (n)ormal and (a)bnormal thresholds
+    score_n_95 = closest_row_n['score']
+    score_a_95 = closest_row_a['score']
+    if args.verbose:
+        sys.stderr.write("INFO: abnormal score threshold = %f\n" % score_a_95)
+        sys.stderr.write("INFO: normal score threshold = %f\n" % score_n_95)
+        
+    scoredf["functional_consequence"] = "indeterminate"
+    scoredf.loc[scoredf["score"] <= score_a_95, "functional_consequence"] = "functionally_abnormal"
+    scoredf.loc[scoredf["score"] >= score_n_95, "functional_consequence"] = "functionally_normal"
+
+    return scoredf
+    
+
+def getAnnots(args, vepdir, targetlist):
+    if args.verbose:
+        sys.stderr.write("INFO: Loading annotation files for variants from %s\n" % vepdir)
+    annotdf = pd.DataFrame()
+    for target in targetlist:
+        vepfile = os.path.join(vepdir, "%s.dels.vep.tsv" % target)
+        vepdf = sge_util.getVEPdf(vepfile, type="del")
+        vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
+
+        annotdf = pd.concat(
+            [
+                annotdf,
+                vepdf[
+                    ["chrom", "start", "end",
+                     "amino_acid_change", "Consequence",
+                     "hgvs_p", "CDS_position", "cDNA_position"]
+                ]
+            ]
+        )
+    annotdf = annotdf.drop_duplicates()
+    return annotdf
+
+
+# the scoring model
+def runModel(row, days):
+    x = []
+    y = []
+    colnames = list(row.index)
+
+    for d in days:
+        cols = [c for c in colnames if c.startswith(d) and c.endswith("_log2_adjusted")]
+        for c in cols:
+            if not pd.isna(row[c]):
+                x.append(int(d[1:]))
+                y.append(row[c])
+    x.append(0)
+    y.append(0)
+    x=np.array(x)
+    y=np.array(y)
+    
+    try:
+        model = linregress(x, y)
+    except:
+        return [None, None]
+    
+    return [model.slope, model.stderr]
+
+
+def runModelDups(row, days):
+    x = []
+    y = []
+    colnames = list(row.index)
+
+    for d in days:
+        cols = [c for c in colnames if c.startswith(d) and c.endswith("_log2_adjusted")]
+        for c in cols:
+            for myvalue in row[c]: # iterate thru list
+                if not pd.isna(myvalue):
+                    x.append(int(d[1:]))
+                    y.append(myvalue)
+    x.append(0)
+    y.append(0)
+    x=np.array(x)
+    y=np.array(y)
+    try:
+        model = linregress(x, y)
+    except:
+        return [None, None]
+    return [model.slope, model.stderr]
+
+
+def handleDups(args, countsdf, dupdf):
+    if args.verbose:
+        sys.stderr.write("INFO: Collapsing scores of duplicated variants\n")
+    filtdf = countsdf[countsdf["start"].isin(dupdf["start"])]
+    if args.verbose:
+        sys.stderr.write("INFO: identified %d duplicate entries\n" % filtdf.shape[0])
+    tmpdf = filtdf.groupby(
+        ["start"]
+    ).agg(
+        list
+    ).reset_index()
+    tmpdf[['dupscore', 'dupse']] = tmpdf.apply(
+        runModelDups,
+        axis=1,
+        result_type='expand',
+        days=args.daystrings
+    )
+    return tmpdf[["start", "dupscore", "dupse"]]
+
+
+
+def scoreTarget(args, tdf, t):
+    if args.verbose:
+        sys.stderr.write("INFO: Scoring variants in %s\n" % t)
+
+    days = args.daystrings
+    tdf[['modelscore', 'modelse']] = tdf.apply(
+        runModel,
+        axis=1,
+        result_type='expand',
+        days=days
+    )
+    resdf = tdf[[
+        "target", "exon", "chrom", "start",
+        "end", "delseq", "modelscore", "modelse"
+    ]]
+    return resdf
+
+
+# use a loess smoother to smooth the non-day5 frequencies
+def smoothe_freqs(args, df, daycounts):
+    filtercols = [col for col in df.columns if col.startswith("D05_") \
+                  and col.endswith("over_snvlib")]
+    cond = (df[filtercols[0]] >= 0)
+    if len(filtercols) > 1:
+        for col in filtercols[1:]:
+            cond &= (df[col] >= 0)
+
+    fullcount = df.shape[0]
+    filtdf = df[cond]
+    filtcount = filtdf.shape[0]
+
+    allcoords = df["start"].unique()
+    if args.verbose:
+        print("INFO: smoothing started with %d dels" % fullcount)
+        print("INFO: after filtering with threshold=%f, %d dels remain" % (0.5,
+                                                                           filtcount))
+
+    for col in filtercols:
+        loesscol = col.replace("over_snvlib", "loess_adjustment")
+        xlist = filtdf['start'].to_numpy()
+        ylist = filtdf[col].to_numpy()
+        ylist = np.log2(ylist)
+        xout, yout, wout = loess.loess_1d.loess_1d(
+            xlist,
+            ylist,
+            xnew=allcoords,
+            frac=0.2
+        )
+        mydata = np.array([xout, yout])
+        tmpdf = pd.DataFrame(
+            data=mydata.T, 
+            columns=["start", loesscol]
+        ).drop_duplicates(
+            subset=['start'], 
+            keep='first'
+        )
+        tmpdf['start'] = tmpdf['start'].astype(int)
+
+        df = df.merge(tmpdf, on="start")
+
+        for d in daycounts:
+            origcol = col.replace("D05", d) + "_log2"
+            newcol = origcol + "_adjusted"
+            df[newcol] = df[origcol] - df[loesscol]
+
+    return df
+
+
+def filterCounts(args, tdf, t, all_countcols, all_freqcols):
+    if args.verbose:
+        sys.stderr.write("INFO: filtering counts for target %s\n" % t)
+        sys.stderr.write("INFO: before filtering, dataframe has %d variants\n" % tdf.shape[0])
+
+
+    freqcols = [col for col in all_freqcols if col[:3] in args.filterstrings]
+    countcols = [col for col in all_countcols if col[:3] in args.filterstrings]
+
+    minfreq = args.minfreq
+    mincount = args.mincount
+    cnd = (tdf["target"] == t)
+    for fcol in freqcols:
+        cnd &= (tdf[fcol] >= minfreq)
+    for ccol in countcols:
+        cnd &= (tdf[ccol] >= mincount)
+    tdf = tdf[cnd]
+
+    if args.verbose:
+        sys.stderr.write("INFO: after filtering, dataframe has %d variants\n" % tdf.shape[0])
+    return tdf
+
+
+def loadCounts(args, targetfile, t):
+    if args.verbose:
+        sys.stderr.write("INFO: working on target %s\n" % t)
+
+    target = sge_target.Target(t, targetfile)
+    countcols = []
+    freqcols = []
+    # load the day 0 library
+
+    delfiles = target.getDelSampleList(
+        args.countsdir,
+        include_neg=False
+    )
+    libfile = delfiles['D00'][0]
+    df = sge_counts.getDelCounts(
+        libfile,
+        augment=True,
+        pseudocount=0
+    )
+    df = df.rename(
+        columns={'count': 'snvlib_count'}
+    ).drop(
+        columns=["sampleid", "repl", "day"]
+    )
+
+    statsfile = libfile.replace(
+        ".dels.tsv",
+        ".readstats.tsv"
+    )
+    statsdf = sge_counts.getReadStats(
+        statsfile,
+        augment=False
+    )
+    freqcol = "snvlib_freq"
+    normval = statsdf["deletion_reads"][0] + statsdf["snv_reads"][0]
+    df[freqcol] = df["snvlib_count"] / normval
+
+    # load the various timepoints and replicates
+    nsamples = 1
+    daycounts = {}
+
+    for delday, delfilelist in sorted(delfiles.items()):
+        if delday == "D00": continue  # already loaded
+        shortday = int(delday[1:])
+        if shortday not in args.days:
+            sys.stderr.write("WARN: Skipping data for day %d as instructed\n" % shortday)
+            continue
+
+        for delfile in sorted(delfilelist):
+            # exclude neg ctrl
+            if "_NC_" in delfile:
+                continue
+            nsamples += 1
+            if delday in daycounts:
+                daycounts[delday] += 1
+            else:
+                daycounts[delday] = 1
+
+            if args.verbose:
+                sys.stderr.write("INFO: loading data from %s\n" % delfile)
+            tmpdf = sge_counts.getDelCounts(
+                delfile,
+                augment=False,
+                pseudocount=0
+            )
+            statsfile = delfile.replace(
+                ".dels.tsv",
+                ".readstats.tsv"
+            )
+            statsdf = sge_counts.getReadStats(
+                statsfile,
+                augment=False
+            )
+            countcol = "%s_R%d" % (delday, daycounts[delday])
+            tmpdf = tmpdf.rename(
+                columns={'count': countcol}
+            )
+            countcols.append(countcol)
+            freqcol = countcol + "_freq"
+            normval = statsdf["deletion_reads"][0] + statsdf["snv_reads"][0]
+            tmpdf[freqcol] = tmpdf[countcol] / normval
+            freqcols.append(freqcol)
+            df = df.merge(
+                tmpdf[["chrom", "start", "end", countcol,
+                       freqcol, 
+                       ]],
+                on=["chrom", "start", "end"]
+            )
+            libratiocol = "%s_over_snvlib" % (countcol)
+            df[libratiocol] = df[freqcol] / df["snvlib_freq"]
+            log2libratiocol = "%s_over_snvlib_log2" % (countcol)
+            df[log2libratiocol] = np.log2(df[libratiocol])
+
+    if args.verbose:
+        sys.stderr.write("INFO: Finished loading data from %d samples\n" % nsamples)
+        sys.stderr.write("INFO: Using data from timepoints: %s\n" % (', '.join(list(daycounts.keys()))))
+
+    # add target metadata
+    df["target"] = t
+    if t[-1] not in string.digits:
+        shorttarget = t[:-1]
+    else:
+        shorttarget = t
+    df["exon"] = shorttarget
+
+    # filter low counts/freqs
+    df = filterCounts(
+        args,
+        df,
+        t,
+        countcols,
+        freqcols
+    )
+
+    # smoothe the freqs
+    df = smoothe_freqs(
+        args,
+        df,
+        daycounts
+    )
+
+    df['delseq'] = df.apply(
+        lambda x: ''.join(target.refdf[(target.refdf["pos"] < x["start"]) | (target.refdf["pos"] > x["end"])]["ref"].to_list()),
+        axis=1
+    )
+    return df
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='scoreDeletions',
+        description='score deletions across a gene'
+    )
+    parser.add_argument(
+        '-o', '--outfile', required=True,
+        help="Path to output TSV file of scores"
+    )
+    parser.add_argument(
+        '-C', '--outputcounts', required=False, default="",
+        help="Path to output TSV file of per-tile counts for each replicate"
+    )
+    parser.add_argument(
+        '-g', '--gene', required=True,
+        help='Gene to score'
+    )
+    parser.add_argument(
+        '-V', '--vepdir', required=False,
+        help="Path to directory with VEP files"
+    )
+    parser.add_argument(
+        '-e', '--ensemblfile', required=False,
+        default="/net/bbi/vol1/data/sge-analysis/etc/extended_ensembl_consequence.tsv",
+        help="Path to ensembl consequence groupings in TSV format"
+    )
+    parser.add_argument(
+        '-t', '--targetfile', required=False,
+        help='Path to target file (can be auto detected)'
+    )
+    parser.add_argument(
+        '-v', '--verbose', required=False, default=False,
+        action="store_true", help="Verbose output"
+    )
+    parser.add_argument(
+        '-c', '--countsdir', required=True,
+        help='Load counts files from <countsdir>'
+    )
+    parser.add_argument(
+        '-x', '--exclude', required=False,
+        help='Exclude these regions when scoring a gene (comma-sep list)'
+    )
+    parser.add_argument(
+        '-m', '--mincount', required=False, type=int, default=0,
+        help='filter out variants with raw counts less than <mincount> in any replicate'
+    )
+    parser.add_argument(
+        '-M', '--minfreq', required=False, type=float, default=0.,
+        help='filter out variants with frequencies less than <minfreq> in any replicate'
+    )
+    parser.add_argument(
+        '-f', '--filter', required=False, type=str,
+        help="Comma-separated list of days to use in count filtering (e.g., -f 5 or -f 5,13,17 )"
+    )
+    parser.add_argument(
+        '-d', '--days', required=True, type=str,
+        help="Comma-separated list of days to use in model (e.g., -d 5,13 or -d 5,13,17 )"
+    )
+    parser.add_argument(
+        '-s', '--snvdf', required=False, type=str,
+        help="TSV containing SNV scores for the same gene, from which functional class thresholds are taken"
+    )
+    parser.add_argument(
+        '-F', '--skipfunctional',
+        required=False, default=False,
+        action="store_true", help="Skip functional class assignment"
+    )
+    args = parser.parse_args()
+
+
+    # handle the targetfile
+
+    if not args.targetfile:
+        targetfile = sge_util.guess_target_file(args.gene)
+    else:
+        targetfile = args.targetfile
+    if not targetfile or not os.path.exists(targetfile):
+        sys.stderr.write("ERROR: Can't locate target file\n")
+        sys.exit(-99)
+
+    # handle the VEP output directory
+    if not args.vepdir:
+        vepdir = "/net/bbi/vol1/data/sge-analysis/etc/%s/" % args.gene
+    else:
+        vepdir = args.vepdir
+    if not os.path.isdir(vepdir):
+        sys.stderr.write("ERROR: Can't find VEP directory %s\n" % vepdir)
+        sys.exit(-99)
+
+    if not args.days:
+        sys.stderr.write("ERROR: Must supply -d / --days\n")
+        sys.exit(-99)
+
+    try:
+        args.days = [int(s.strip()) for s in args.days.split(",")]
+        # turn [5, 13, 17] into ["D05", "D13", "D17"]
+        args.daystrings = ["D" + str(d).zfill(2) for d in args.days]
+        sys.stderr.write("INFO: using days %s in model\n" % ', '.join(map(str, args.days)))
+
+    except:
+        sys.stderr.write("ERROR: Unable to parse days from -d / --days argument: %s\n" % args.days)
+        sys.exit(-99)
+
+    # parse the filtering days
+    if not args.filter:
+        sys.stderr.write("INFO: No count-based filtering will be applied\n")
+        args.filter = []
+        args.filterstrings = []
+
+    else:
+        try:
+            args.filter = [int(s.strip()) for s in args.filter.split(",")]
+            # turn [5, 13, 17] into ["D05", "D13", "D17"]
+            args.filterstrings = ["D" + str(d).zfill(2) for d in args.filter]
+
+            sys.stderr.write("INFO: will filter based on days %s\n" % ', '.join(map(str, args.filter)))
+
+        except:
+            sys.stderr.write("ERROR: Unable to parse days from -f / --filter argument: %s\n" % args.filter)
+            sys.exit(-99)
+
+    # load the target file and exclude any targets if necessary
+    targetdf = pd.read_csv(targetfile, sep="\t", header=0)
+    targetlist = targetdf["target"].to_list()
+
+    if args.verbose:
+        sys.stderr.write("INFO: Found %d targets in targetfile %s\n" % (len(targetlist),
+                                                                        targetfile))
+
+    # check for excluded targets
+    exclude_targets = []
+    if args.exclude:
+        parts = args.exclude.split(",")
+        for p in parts:
+            exclude_targets.append(p)
+    targetlist = [tl for tl in targetlist if tl not in exclude_targets]
+    if args.verbose:
+        sys.stderr.write("INFO: After processing exclusions, %d targets remain\n" % (len(targetlist)))
+
+
+    annotdf = getAnnots(args, vepdir, targetlist)
+    countsdf = pd.DataFrame()
+    scoredf = pd.DataFrame()
+    for t in targetlist:
+        tdf = loadCounts(args, targetfile, t)
+        countsdf = pd.concat([countsdf, tdf])
+        tscoresdf = scoreTarget(args, tdf, t)
+        scoredf = pd.concat([scoredf, tscoresdf])
+
+
+    # at this point we've scored all the targets.  now we need to identify the 
+    # variants that are covered twice
+    dupdf = scoredf[scoredf.duplicated("start", keep=False) == True]
+    dupscoredf = handleDups(args, countsdf, dupdf)    
+    scoredf = scoredf.merge(
+        dupscoredf[["start", "dupscore", "dupse"]],
+        on="start", 
+        how="outer"
+    )
+    scoredf = scoredf.drop_duplicates(subset=["start"])
+    scoredf["score"] = scoredf["dupscore"]
+    scoredf["standard_error"] = scoredf["dupse"]
+    scoredf.loc[scoredf["score"].isna(), "score"] = scoredf["modelscore"]
+    scoredf.loc[scoredf["standard_error"].isna(), "standard_error"] = scoredf["modelse"]
+
+    scoredf["95_ci_upper"] = scoredf["score"] + (1.96 * scoredf["standard_error"])
+    scoredf["95_ci_lower"] = scoredf["score"] - (1.96 * scoredf["standard_error"])
+
+    scoredf = scoredf.merge(
+        annotdf[
+            ["start", "end", "Consequence",
+             "amino_acid_change", "hgvs_p",
+             "CDS_position", "cDNA_position"]
+        ],
+        on=["start", "end"]
+    )
+
+    
+    scoredf["simplified_consequence"] = scoredf["Consequence"].apply(
+        get_simplified_consequence,
+        ensemblfile=args.ensemblfile
+    )
+    scoredf = scoredf.drop(
+        columns=["Consequence"]
+    ).rename(
+        columns={
+            'simplified_consequence': 'consequence',
+            #'allele': 'alt'
+        }
+    )
+    scoredf["variant_qc_flag"] = "PASS"
+
+    if args.outputcounts:
+        saveCounts(args, countsdf)
+
+    if args.snvdf and not args.skipfunctional:
+        scoredf = makeFunctionalClasses(
+            args,
+            scoredf,
+        )
+    else:
+        scoredf["functional_consequence"] = ""
+        
+    scoredf = scoredf[[
+        "chrom", "start", "end", "exon", "target",
+        "consequence", "score", "standard_error", "95_ci_upper", "95_ci_lower",
+        "amino_acid_change", "hgvs_p", "CDS_position", "cDNA_position", 
+        "functional_consequence",
+        "variant_qc_flag"]]
+
+    saveDelScores(args, scoredf)
+    return 0
+
+
+if __name__ == '__main__':
+    main()
+    

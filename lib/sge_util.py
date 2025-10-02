@@ -8,7 +8,6 @@ import sge_counts
 import sge_target
 
 
-
 def calcPairwisePearsonR(target, snvfile1, snvfile2):
     '''calculates the pairwise Pearson r between two named sample ids
     
@@ -53,12 +52,30 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
             mean_corrs[day] = np.mean(corrs)
     return mean_corrs
 
-
-def getHGVSp(vepstring):
+    
+def getHGVSp(veprow):
+    vepstring = veprow["Extra"]
     try:
-        return vepstring.split(";")[4].split("=")[1].replace("%3D", "=")
+        pdot = ""
+        offset = False
+        parts = vepstring.split(";")
+        for p in parts:
+            k, v = p.split("=")
+            if k == "HGVSp":
+                pdot = v.replace("%3D", "=")
+            elif k == "HGVS_OFFSET":
+                offset = True
+
     except:
-        return ""
+        return ["", ""]
+
+    if pdot:
+        if offset is False:
+            return [pdot, "yes"]
+        else:
+            return [pdot, "no"]
+    else:
+        return ["", ""]
 
 
 def getVEPdf(vepfile, type="snv"):
@@ -71,14 +88,14 @@ def getVEPdf(vepfile, type="snv"):
         vepdf = vepdf.rename(columns={'Allele': 'allele'})
         vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
         vepdf["pos"] = vepdf["pos"].astype(int)
-        vepdf["hgvs_p"] = vepdf["Extra"].apply(getHGVSp)
+        vepdf[["hgvs_p", "is_canonical_hgvs_p"]] = vepdf.apply(getHGVSp, axis=1, result_type='expand')
     elif type == "del":
         vepdf = pd.read_csv(vepfile, sep="\t", skiprows=45)
         vepdf[["chrom", "coords"]] = vepdf["Location"].str.split(":", expand=True)
         vepdf[["start", "end"]] = vepdf["coords"].str.split("-", expand=True)
         vepdf["start"] = vepdf["start"].astype(int)
         vepdf["end"] = vepdf["end"].astype(int)
-        vepdf["hgvs_p"] = vepdf["Extra"].apply(getHGVSp)
+        vepdf[["hgvs_p", "is_canonical_hgvs_p"]] = vepdf.apply(getHGVSp, axis=1, result_type='expand')
     else:
         return None
     return vepdf

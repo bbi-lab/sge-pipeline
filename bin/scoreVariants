@@ -49,19 +49,25 @@ def find_nearest(array, value):
 def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     mean_nonsense = scoredf[(scoredf["consequence"].isin(["stop_gained",])) &
                             (scoredf["variant_qc_flag"] == "PASS") &
+                            (scoredf["variant_type"] == "snv") &
                             (~scoredf["pos"].isin(exclude_nonsense_coords))]["score"].mean()
     syn_low = scoredf[(scoredf["consequence"].isin(["synonymous_variant","intron_variant"])) &
-                           (scoredf["variant_qc_flag"] == "PASS")]["score"].quantile(0.025)
+                      (scoredf["variant_type"] == "snv") &
+                      (scoredf["variant_qc_flag"] == "PASS")]["score"].quantile(0.025)
     syn_high = scoredf[(scoredf["consequence"].isin(["synonymous_variant","intron_variant"])) &
-                            (scoredf["variant_qc_flag"] == "PASS")]["score"].quantile(0.975)
+                       (scoredf["variant_type"] == "snv") &
+                       (scoredf["variant_qc_flag"] == "PASS")]["score"].quantile(0.975)
     mean_syn = scoredf[(scoredf["consequence"].isin(["synonymous_variant","intron_variant"])) &
                        (scoredf["variant_qc_flag"] == "PASS") &
+                       (scoredf["variant_type"] == "snv") &
                        (scoredf["score"] >= syn_low) & (scoredf["score"] <= syn_high)]["score"].mean()
     syn_fit = scoredf[(scoredf["consequence"].isin(["synonymous_variant","intron_variant"])) &
+                      (scoredf["variant_type"] == "snv") &
                       (scoredf["variant_qc_flag"] == "PASS") &
                       (scoredf["score"] >= syn_low) & (scoredf["score"] <= syn_high)]["score"].to_list()
 
     nons = scoredf[(scoredf["consequence"].isin(["stop_gained",])) &
+                   (scoredf["variant_type"] == "snv") &
                    (scoredf["variant_qc_flag"] == "PASS") &
                    (~scoredf["pos"].isin(exclude_nonsense_coords))]["score"].to_list()
     nons.extend(syn_fit)
@@ -71,14 +77,20 @@ def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
         random_state=args.randomseed
     ).fit(
         np.array(nons).reshape(-1, 1)
-    ) 
-    allscores = np.array(scoredf["score"].to_list()).reshape(-1, 1)
+    )
+    if args.verbose:
+        sys.stderr.write("INFO: would classify %d variants before NaN filtering\n" % scoredf.shape[0])
+    scoresub = scoredf[~scoredf["score"].isna()]
+    if args.verbose:
+        sys.stderr.write("INFO: after filtering, will classify %d variants\n" % scoresub.shape[0])
+    allscores = np.array(scoresub["score"].to_list()).reshape(-1, 1)
     preds = gm.predict_proba(allscores)
-    scoredf[["gmm_density_abnormal", "gmm_density_normal"]] = preds
-    scoredf["functional_consequence"] = "indeterminate"
-    scoredf.loc[scoredf["gmm_density_abnormal"] >= args.gmmthresh, "functional_consequence"] = "functionally_abnormal"
-    scoredf.loc[scoredf["gmm_density_normal"] >= args.gmmthresh, "functional_consequence"] = "functionally_normal"
-
+    scoresub[["gmm_density_abnormal", "gmm_density_normal"]] = preds
+    #scoredf[["gmm_density_abnormal", "gmm_density_normal"]] = preds
+    scoresub["functional_consequence"] = "indeterminate"
+    scoresub.loc[scoresub["gmm_density_abnormal"] >= args.gmmthresh, "functional_consequence"] = "functionally_abnormal"
+    scoresub.loc[scoresub["gmm_density_normal"] >= args.gmmthresh, "functional_consequence"] = "functionally_normal"
+    scoredf = scoredf.merge(scoresub, how="left")
     # avoid the counter-intuitive situation where some high-scoring variants could get abnormal labels owing
     # to heavy tails in the abnormal distribution
     normalmax = scoredf[(scoredf["functional_consequence"] == "functionally_normal") &
@@ -137,45 +149,58 @@ def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     return scoredf
 
 
-def saveCounts(args, df):
+def saveDeletionCounts(args, df):
+    countcols = [c for c in df.columns if c.startswith("D") and c[-2:] in ("R1", "R2", "R3")]
+    outcols = ["chrom", "start", "end", "target", "snvlib_count"]
+    outcols.extend(countcols)
+    df = df[outcols]
+    outfile = args.outputdeletioncounts
+    df.to_csv(outfile, index=False, sep="\t")
+    if args.verbose:
+        sys.stderr.write("INFO: wrote deletion counts to %s\n" % outfile)
+    return
+
+
+def saveSNVCounts(args, df):
     df = df.rename(columns={'allele': 'alt'})
     countcols = [c for c in df.columns if c.startswith("D") and c[-2:] in ("R1", "R2", "R3")]
     outcols = ["chrom", "pos", "ref", "alt", "target", "snvlib_count"]
     outcols.extend(countcols)
     df = df[outcols]
-    outfile = args.outputcounts
+    outfile = args.outputsnvcounts
     df.to_csv(outfile, index=False, sep="\t")
     if args.verbose:
-        sys.stderr.write("INFO: wrote counts to %s\n" % outfile)
+        sys.stderr.write("INFO: wrote SNV counts to %s\n" % outfile)
     return
 
 
 def saveModelParameters(args, mean_abnormal, mean_normal, sd_abnormal, sd_normal, thresh_abnormal, thresh_normal):
     with open(args.outputmodel, "w") as outfile:
-        outfile.write("gmm_thresh\tmean_abnormal\tmean_normal\tsd_abnormal\tsd_normal\tthresh_abnormal\tthresh_normal\n")
-        outfile.write("%f\t%f\t%f\t%f\t%f\t%f\t%f\n" % (
+        outfile.write("gmm_thresh\tmean_abnormal\tmean_normal\tsd_abnormal\tsd_normal\tthresh_abnormal\tthresh_normal\trandom_seed\n")
+        outfile.write("%f\t%f\t%f\t%f\t%f\t%f\t%f\t%d\n" % (
             args.gmmthresh,
             mean_abnormal,
             mean_normal,
             sd_abnormal,
             sd_normal,
             thresh_abnormal,
-            thresh_normal)
+            thresh_normal,
+            args.randomseed)
         )            
     if args.verbose:
         sys.stderr.write("INFO: wrote model parameters to %s\n" % args.outputmodel)
     return
 
 
-def saveSNVScores(args, df):
+def saveScores(args, df):
     outfile = args.outfile
     df.to_csv(outfile, index=False, sep="\t", float_format='%g')
     if args.verbose:
-        sys.stderr.write("INFO: wrote SNV scores to %s\n" % outfile)
+        sys.stderr.write("INFO: wrote scores to %s\n" % outfile)
     return
                   
 
-def getAnnots(args, vepdir, targetlist, targetfile):
+def getAnnots(args, vepdir, targetlist, targetfile, type="snv"):
     '''read the annotations from the VEP output for each tile, and return a dataframe
     '''
     # create a set to hold protein positions where we want to apply a warning
@@ -184,46 +209,95 @@ def getAnnots(args, vepdir, targetlist, targetfile):
         sys.stderr.write("INFO: Loading annotation files for variants from %s\n" % vepdir)
     annotdf = pd.DataFrame()
     for target in targetlist:
-        vepfile = os.path.join(vepdir, "%s.snvs.vep.tsv" % target)
-        vepdf = sge_util.getVEPdf(vepfile)
+        if type == "snv":
+            vepfile = os.path.join(vepdir, "%s.snvs.vep.tsv" % target)
+        else:
+            vepfile = os.path.join(vepdir, "%s.dels.vep.tsv" % target)
+        vepdf = sge_util.getVEPdf(vepfile, type=type)
         vepdf["amino_acid_change"] = vepdf.apply(sge_util.makeAAsub, axis=1)
-        vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
-        vepdf["pos_id"] = vepdf["pos"] + ":" + vepdf["allele"]
-        t = sge_target.Target(target, targetfile)
-        for pos in t.required_edits:
-            protein_pos = vepdf[vepdf["pos"] == str(pos)]["Protein_position"].values[0]
-            if protein_pos != '-':
-                warning_pos.add(str(protein_pos))
-                if args.verbose:
-                    sys.stderr.write("INFO: identified required edit at protein position %d\n" % int(protein_pos))
-        for pos in t.skip_pos:
-            protein_pos = vepdf[vepdf["pos"] == str(pos)]["Protein_position"].values[0]
-            if protein_pos != '-':
-                warning_pos.add(str(protein_pos))
-                if args.verbose:
-                    sys.stderr.write("INFO: identified skipped position (cell line SNV?) at protein position %d\n"
-                                     % int(protein_pos))
-        annotdf = pd.concat(
-            [
-                annotdf,
-                vepdf[
-                    ["chrom", "pos", "allele",
-                     "pos_id", "amino_acid_change",
-                     "Consequence", "hgvs_p",
-                     "CDS_position", "cDNA_position",
-                     "Protein_position"]
+        if type == "snv":
+            vepdf[["chrom", "pos"]] = vepdf["Location"].str.split(":", expand=True)
+            vepdf["start"] = pd.NA
+            vepdf["end"] = pd.NA
+            vepdf["pos_id"] = vepdf["pos"] + ":" + vepdf["allele"]
+
+            t = sge_target.Target(target, targetfile)
+            for pos in t.required_edits:
+                protein_pos = vepdf[vepdf["pos"] == str(pos)]["Protein_position"].values[0]
+                if protein_pos != '-':
+                    warning_pos.add(str(protein_pos))
+                    if args.verbose:
+                        sys.stderr.write("INFO: identified required edit at protein position %d\n" % int(protein_pos))
+            for pos in t.skip_pos:
+                protein_pos = vepdf[vepdf["pos"] == str(pos)]["Protein_position"].values[0]
+                if protein_pos != '-':
+                    warning_pos.add(str(protein_pos))
+                    if args.verbose:
+                        sys.stderr.write("INFO: identified skipped position (cell line SNV?) at protein position %d\n"
+                                        % int(protein_pos))
+            annotdf = pd.concat(
+                [
+                    annotdf,
+                    vepdf[
+                        ["chrom", "pos", "start", "end",
+                         "allele",
+                        "pos_id", "amino_acid_change",
+                        "Consequence", "hgvs_p",
+                        "CDS_position", "cDNA_position",
+                        "Protein_position"]
+                    ]
                 ]
-            ]
-        )
+            )
+
+        else:
+            # read the skeleton VCF we supplied to VEP
+            vepskel = os.path.join(vepdir, "%s.dels.skeleton.vcf" % target)
+            vepskeldf = pd.read_csv(vepskel, sep="\t", skiprows=1)
+            vepskeldf["start"] = vepskeldf["POS"] + 1
+            vepdf = vepdf.merge(
+                vepskeldf[["POS", "start", "REF", "ALT"]], 
+                on="start"
+            ).rename(
+                columns={
+                    'POS': 'pos',
+                    'REF': 'ref',
+                    'ALT': 'allele'
+                }
+            )
+            vepdf["pos_id"] = pd.NA           
+            annotdf = pd.concat(
+                [
+                    annotdf,
+                    vepdf[
+                        ["chrom", "pos", "start", "end",
+                         "ref", "allele", 
+                         "pos_id", "amino_acid_change", 
+                         "Consequence", "hgvs_p", 
+                         "CDS_position", "cDNA_position"
+                         ]
+                    ]   
+                ]   
+            )
     annotdf["warn_codon"] = ""
-    annotdf.loc[annotdf["Protein_position"].astype(str).isin(warning_pos), "warn_codon"] = "WARN"
-    annotdf = annotdf.drop_duplicates(subset=["pos_id"])
+    if type == "snv":
+        annotdf.loc[annotdf["Protein_position"].astype(str).isin(warning_pos), "warn_codon"] = "WARN"
+        annotdf = annotdf.drop_duplicates(
+            subset=["pos_id"]
+        ).drop(
+            columns=["Protein_position"]
+        )
+   
+    else:
+        annotdf = annotdf.drop_duplicates()
+
     return annotdf
 
 
 def runModel(row, days):
     '''apply the simple scoring model to each row in the dataframe, 
     return the score and standard error of the score
+
+    thie model is the same for both deletions and SNVs
     '''
     x = []
     y = []
@@ -232,17 +306,21 @@ def runModel(row, days):
     for d in days:
         cols = [c for c in colnames if c.startswith(d) and c.endswith("_log2_adjusted")]
         for c in cols:
-            if not pd.isna(row[c]):
+            #if not pd.isna(row[c]):
+            if np.isfinite(row[c]):
                 x.append(int(d[1:]))
                 y.append(row[c])
+            else:
+                sys.stderr.write("Filtering non-finite element\n")
     x.append(0)
     y.append(0)
-    x=np.array(x)#.reshape(-1, 1)
-    y=np.array(y)#.reshape(-1, 1)
+    x=np.array(x)
+    y=np.array(y)
     
     try:
         model = linregress(x, y)
-    except:
+    except Exception as e:
+        #print(f"Caught error scoring {row['start']}: {e}")
         return [None, None]
     
     return [model.slope, model.stderr]
@@ -260,14 +338,18 @@ def runModelDups(row, days):
     for d in days:
         cols = [c for c in colnames if c.startswith(d) and c.endswith("_log2_adjusted")]
         for c in cols:
-            for myvalue in row[c]: # iterate thru list
-                if not pd.isna(myvalue):
+            for myvalue in row[c]:
+                #if not pd.isna(myvalue):
+                if np.isfinite(myvalue):
                     x.append(int(d[1:]))
                     y.append(myvalue)
+                else:
+                    sys.stderr.write("Filtering non-finite element\n")
+
     x.append(0)
     y.append(0)
-    x=np.array(x)#.reshape(-1, 1)
-    y=np.array(y)#.reshape(-1, 1)
+    x=np.array(x)
+    y=np.array(y)
     try:
         model = linregress(x, y)
     except:
@@ -275,27 +357,30 @@ def runModelDups(row, days):
     return [model.slope, model.stderr]
 
 
-def handleDups(args, countsdf, dupdf):
-    '''handle the duplicated, overlapping variants in adjacent tiles
-    '''
+def handleDups(args, countsdf, dupdf, dupid):
+    # dupid is one of "start" or "pos_id"
     if args.verbose:
         sys.stderr.write("INFO: Collapsing scores of duplicated variants\n")
-    filtdf = countsdf[countsdf["pos_id"].isin(dupdf["pos_id"])]
+    filtdf = countsdf[countsdf[dupid].isin(dupdf[dupid])]
     if args.verbose:
         sys.stderr.write("INFO: identified %d duplicate entries\n" % filtdf.shape[0])
-    tmpdf = filtdf.groupby(["pos_id"]).agg(list).reset_index()
+    tmpdf = filtdf.groupby(
+        [dupid]
+    ).agg(
+        list
+    ).reset_index()
     tmpdf[['dupscore', 'dupse']] = tmpdf.apply(
         runModelDups,
         axis=1,
         result_type='expand',
         days=args.daystrings
     )
-    return tmpdf[["pos_id", "dupscore", "dupse"]]
+    return tmpdf[[dupid, "dupscore", "dupse"]]
 
 
-def scoreTarget(args, tdf, t):
+def scoreSNVTarget(args, tdf, t):
     if args.verbose:
-        sys.stderr.write("INFO: Scoring variants in %s\n" % t)
+        sys.stderr.write("INFO: Scoring SNVs in %s\n" % t)
 
     days = args.daystrings
     tdf[['modelscore', 'modelse']] = tdf.apply(
@@ -310,9 +395,26 @@ def scoreTarget(args, tdf, t):
     return resdf
 
 
+def scoreDeletionTarget(args, tdf, t):
+    if args.verbose:
+        sys.stderr.write("INFO: Scoring deletions in %s\n" % t)
+
+    days = args.daystrings
+    tdf[['modelscore', 'modelse']] = tdf.apply(
+        runModel,
+        axis=1,
+        result_type='expand',
+        days=days
+    )
+    resdf = tdf[[
+        "target", "exon", "chrom", "start",
+        "end", "modelscore", "modelse"
+    ]]
+    return resdf
+
 
 # use a loess smoother to smooth the non-day5 frequencies
-def smoothe_freqs(args, df, daycounts):
+def smootheSNVFreqs(args, df, daycounts):
     filtercols = [col for col in df.columns if col.startswith("D05_") \
                   and col.endswith("over_snvlib")]
     cond = (df[filtercols[0]] >= 0.5)
@@ -361,6 +463,55 @@ def smoothe_freqs(args, df, daycounts):
     return df
 
 
+def smootheDeletionFreqs(args, df, daycounts):
+    filtercols = [col for col in df.columns if col.startswith("D05_") \
+                  and col.endswith("over_snvlib")]
+    cond = (df[filtercols[0]] >= 0)
+    if len(filtercols) > 1:
+        for col in filtercols[1:]:
+            cond &= (df[col] >= 0)
+
+    fullcount = df.shape[0]
+    filtdf = df[cond]
+    filtcount = filtdf.shape[0]
+
+    allcoords = df["start"].unique()
+    if args.verbose:
+        sys.stderr.write("INFO: smoothing started with %d dels\n" % fullcount)
+        sys.stderr.write("INFO: after filtering with threshold=%f, %d dels remain\n" % (0.5,
+                                                                           filtcount))
+
+    for col in filtercols:
+        loesscol = col.replace("over_snvlib", "loess_adjustment")
+        xlist = filtdf['start'].to_numpy()
+        ylist = filtdf[col].to_numpy()
+        ylist = np.log2(ylist)
+        xout, yout, wout = loess.loess_1d.loess_1d(
+            xlist,
+            ylist,
+            xnew=allcoords,
+            frac=0.2
+        )
+        mydata = np.array([xout, yout])
+        tmpdf = pd.DataFrame(
+            data=mydata.T, 
+            columns=["start", loesscol]
+        ).drop_duplicates(
+            subset=['start'], 
+            keep='first'
+        )
+        tmpdf['start'] = tmpdf['start'].astype(int)
+
+        df = df.merge(tmpdf, on="start")
+
+        for d in daycounts:
+            origcol = col.replace("D05", d) + "_log2"
+            newcol = origcol + "_adjusted"
+            df[newcol] = df[origcol] - df[loesscol]
+
+    return df
+
+
 def filterCounts(args, tdf, t, all_countcols, all_freqcols):
     if args.verbose:
         sys.stderr.write("INFO: filtering counts for target %s\n" % t)
@@ -384,7 +535,131 @@ def filterCounts(args, tdf, t, all_countcols, all_freqcols):
     return tdf
 
 
-def loadCounts(args, targetfile, t):
+def loadDeletionCounts(args, targetfile, t):
+    if args.verbose:
+        sys.stderr.write("INFO: working on target %s\n" % t)
+
+    target = sge_target.Target(t, targetfile)
+    countcols = []
+    freqcols = []
+    # load the day 0 library
+
+    delfiles = target.getDelSampleList(
+        args.countsdir,
+        include_neg=False
+    )
+    libfile = delfiles['D00'][0]
+    df = sge_counts.getDelCounts(
+        libfile,
+        augment=True,
+        pseudocount=0
+    )
+    df = df.rename(
+        columns={'count': 'snvlib_count'}
+    ).drop(
+        columns=["sampleid", "repl", "day"]
+    )
+
+    statsfile = libfile.replace(
+        ".dels.tsv",
+        ".readstats.tsv"
+    )
+    statsdf = sge_counts.getReadStats(
+        statsfile,
+        augment=False
+    )
+    freqcol = "snvlib_freq"
+    normval = statsdf["deletion_reads"][0] + statsdf["snv_reads"][0]
+    df[freqcol] = df["snvlib_count"] / normval
+
+    # load the various timepoints and replicates
+    nsamples = 1
+    daycounts = {}
+
+    for delday, delfilelist in sorted(delfiles.items()):
+        if delday == "D00": continue  # already loaded
+        shortday = int(delday[1:])
+        if shortday not in args.days:
+            sys.stderr.write("WARN: Skipping data for day %d as instructed\n" % shortday)
+            continue
+
+        for delfile in sorted(delfilelist):
+            # exclude neg ctrl
+            if "_NC_" in delfile:
+                continue
+            nsamples += 1
+            if delday in daycounts:
+                daycounts[delday] += 1
+            else:
+                daycounts[delday] = 1
+
+            if args.verbose:
+                sys.stderr.write("INFO: loading data from %s\n" % delfile)
+            tmpdf = sge_counts.getDelCounts(
+                delfile,
+                augment=False,
+                pseudocount=0
+            )
+            statsfile = delfile.replace(
+                ".dels.tsv",
+                ".readstats.tsv"
+            )
+            statsdf = sge_counts.getReadStats(
+                statsfile,
+                augment=False
+            )
+            countcol = "%s_R%d" % (delday, daycounts[delday])
+            tmpdf = tmpdf.rename(
+                columns={'count': countcol}
+            )
+            countcols.append(countcol)
+            freqcol = countcol + "_freq"
+            normval = statsdf["deletion_reads"][0] + statsdf["snv_reads"][0]
+            tmpdf[freqcol] = tmpdf[countcol] / normval
+            freqcols.append(freqcol)
+            df = df.merge(
+                tmpdf[["chrom", "start", "end", countcol,
+                       freqcol, 
+                       ]],
+                on=["chrom", "start", "end"]
+            )
+            libratiocol = "%s_over_snvlib" % (countcol)
+            df[libratiocol] = df[freqcol] / df["snvlib_freq"]
+            log2libratiocol = "%s_over_snvlib_log2" % (countcol)
+            df[log2libratiocol] = np.log2(df[libratiocol])
+
+    if args.verbose:
+        sys.stderr.write("INFO: Finished loading data from %d samples\n" % nsamples)
+        sys.stderr.write("INFO: Using data from timepoints: %s\n" % (', '.join(list(daycounts.keys()))))
+
+    # add target metadata
+    df["target"] = t
+    if t[-1] not in string.digits:
+        shorttarget = t[:-1]
+    else:
+        shorttarget = t
+    df["exon"] = shorttarget
+
+    # filter low counts/freqs
+    df = filterCounts(
+        args,
+        df,
+        t,
+        countcols,
+        freqcols
+    )
+
+    # smoothe the freqs
+    df = smootheDeletionFreqs(
+        args,
+        df,
+        daycounts
+    )
+    return df
+
+
+
+def loadSNVCounts(args, targetfile, t):
     if args.verbose:
         sys.stderr.write("INFO: working on target %s\n" % t)
 
@@ -491,7 +766,7 @@ def loadCounts(args, targetfile, t):
     )
 
     # smoothe the freqs
-    df = smoothe_freqs(
+    df = smootheSNVFreqs(
         args,
         df,
         daycounts
@@ -502,25 +777,44 @@ def loadCounts(args, targetfile, t):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='scoreSNVs',
-        description='produce SNV scores from counts for a set of tiles in a gene'
+        prog='scoreVariants',
+        description='produce SGE SNV and deletion scores from counts for a set of tiles in a gene'
+    )
+    parser.add_argument(
+        '-g', '--gene', required=True,
+        help='Gene to score'
+    )
+    parser.add_argument(
+        '-c', '--countsdir', required=True,
+        help='Load counts files from <countsdir>'
+    )
+    parser.add_argument(
+        '--nodels',  required=False, default=False,
+        action="store_true", 
+        help="Do not score deletions (default=False)"
+    )
+    parser.add_argument(
+        '--nosnvs',  required=False, default=False,
+        action="store_true", 
+        help="Do not score SNVs (default=False)"
     )
     parser.add_argument(
         '-o', '--outfile', required=True,
         help="Path to output TSV file of scores"
     )
     parser.add_argument(
-        '-C', '--outputcounts', required=False, default="",
-        help="Path to output TSV file of per-tile counts for each replicate"
+        '-C', '--outputsnvcounts', required=False, default="",
+        help="Path to output TSV file of per-target SNV counts for each replicate"
+    )
+    parser.add_argument(
+        '-D', '--outputdeletioncounts', required=False, default="",
+        help="Path to output TSV file of per-target deletion counts for each replicate"
     )
     parser.add_argument(
         '-E', '--outputmodel', required=False, default="",
         help="Path to output TSV file of GMM component means, variances, and class thresholds"
     )    
-    parser.add_argument(
-        '-g', '--gene', required=True,
-        help='Gene to score'
-    )
+
     parser.add_argument(
         '-V', '--vepdir', required=False,
         help="Path to directory with VEP files"
@@ -532,15 +826,11 @@ def main():
     )
     parser.add_argument(
         '-t', '--targetfile', required=False,
-        help='Path to target file (can be auto detected)'
+        help='Path to targets.tsv file (can be auto detected)'
     )
     parser.add_argument(
         '-v', '--verbose', required=False, default=False,
         action="store_true", help="Verbose output"
-    )
-    parser.add_argument(
-        '-c', '--countsdir', required=True,
-        help='Load counts files from <countsdir>'
     )
     parser.add_argument(
         '-x', '--exclude', required=False,
@@ -580,9 +870,25 @@ def main():
     )
                         
     args = parser.parse_args()
+    snv_mode = True
+    if args.nosnvs:
+        sys.stderr.write("INFO: Deactivating SNV scoring due to --nosnvs flag\n")
+        snv_mode = False
+
+    deletion_mode = True
+    if args.nodels:
+        sys.stderr.write("INFO: Deactivating deletion scoring due to --nodels flag\n")
+        deletion_mode = False
+    
+    if not snv_mode and not deletion_mode:
+        sys.stderr.write("ERROR: must score either deletions or SNVs, or both\n")
+        sys.exit(-99)
+
+    # ------------------------------------------------------------
+    # command-line argument management
+    # ------------------------------------------------------------
 
     # handle the targetfile
-
     if not args.targetfile:
         targetfile = sge_util.guess_target_file(args.gene)
     else:
@@ -600,6 +906,7 @@ def main():
         sys.stderr.write("ERROR: Can't find VEP directory %s\n" % vepdir)
         sys.exit(-99)
 
+    # what days to use for scoring
     if not args.days:
         sys.stderr.write("ERROR: Must supply -d / --days\n")
         sys.exit(-99)
@@ -654,7 +961,7 @@ def main():
     if args.verbose:
         sys.stderr.write("INFO: After processing exclusions, %d targets remain\n" % (len(targetlist)))
 
-    # check for targets to exclude from nonsense z score percentile calculation
+    # check for targets to exclude from GMM fitting
     exclude_nonsense = []
     exclude_nonsense_coords = set()
     if args.nononsense:
@@ -669,44 +976,123 @@ def main():
     if args.verbose:
         sys.stderr.write("INFO: Will exclude %d positions from nonsense threshold computation\n" % len(exclude_nonsense_coords))
 
-    annotdf = getAnnots(args, vepdir, targetlist, targetfile)
-    countsdf = pd.DataFrame()
-    scoredf = pd.DataFrame()
-    for t in targetlist:
-        try:
-            tdf = loadCounts(args, targetfile, t)
-        except:
-            sys.stderr.write("WARN: couldn't load counts for target %s, skipping\n" % t)
-            continue
-        countsdf = pd.concat([countsdf, tdf])
-        tscoresdf = scoreTarget(args, tdf, t)
-        scoredf = pd.concat([scoredf, tscoresdf])
 
-    # now done with individual targets, so we need to collapse dups
-    dupdf = scoredf[scoredf.duplicated("pos_id", keep=False) == True]
-    dupscoredf = handleDups(args, countsdf, dupdf)    
+    # ------------------------------------------------------------
+    # main SNV workflow starts here
+    # ------------------------------------------------------------
+    if snv_mode:
+        snvannotdf = getAnnots(args, vepdir, targetlist, targetfile)
+        snvcountsdf = pd.DataFrame()
+        snvscoredf = pd.DataFrame()
+        for t in targetlist:
+            try:
+                tdf = loadSNVCounts(args, targetfile, t)
+            except:
+                sys.stderr.write("WARN: couldn't load SNV counts for target %s, skipping\n" % t)
+                continue
+            snvcountsdf = pd.concat([snvcountsdf, tdf])
+            tscoresdf = scoreSNVTarget(args, tdf, t)
+            snvscoredf = pd.concat([snvscoredf, tscoresdf])
 
-    scoredf = scoredf.merge(
-        dupscoredf[["pos_id", "dupscore", "dupse"]],
-        on="pos_id", 
-        how="outer"
-    )
-    scoredf = scoredf.drop_duplicates(subset=["pos_id"])
-    scoredf["score"] = scoredf["dupscore"]
-    scoredf["standard_error"] = scoredf["dupse"]
-    scoredf.loc[scoredf["score"].isna(), "score"] = scoredf["modelscore"]
-    scoredf.loc[scoredf["standard_error"].isna(), "standard_error"] = scoredf["modelse"]
+        # now done with individual SNV targets, so we need to collapse SNV dups
+        snvdupdf = snvscoredf[snvscoredf.duplicated("pos_id", keep=False) == True]
+        snvdupscoredf = handleDups(args, snvcountsdf, snvdupdf, "pos_id")
 
+        snvscoredf = snvscoredf.merge(
+            snvdupscoredf[["pos_id", "dupscore", "dupse"]],
+            on="pos_id", 
+            how="outer"
+        ).drop_duplicates(
+            subset=["pos_id"]
+        )
+        # if there are scores from the duplicate workflow, use them.
+        # otherwise, use the regular scores
+        snvscoredf["score"] = snvscoredf["dupscore"]
+        snvscoredf["standard_error"] = snvscoredf["dupse"]
+        snvscoredf.loc[snvscoredf["score"].isna(), "score"] = snvscoredf["modelscore"]
+        snvscoredf.loc[snvscoredf["standard_error"].isna(), "standard_error"] = snvscoredf["modelse"]
+        # merge the scores with the variant annotations
+        snvscoredf = snvscoredf.merge(
+            snvannotdf[[
+                "pos_id", 
+                "start",
+                "end",
+                "Consequence",
+                "amino_acid_change",
+                "hgvs_p",
+                "CDS_position", 
+                "cDNA_position",
+                "warn_codon"
+            ]],
+            on="pos_id"
+        )
+
+
+        snvscoredf["variant_type"] = "snv"
+
+    else: # snv_mode is False
+        snvscoredf = pd.DataFrame()
+
+
+    # ------------------------------------------------------------
+    # main deletion workflow starts here
+    # ------------------------------------------------------------
+
+    if deletion_mode:
+        delannotdf = getAnnots(args, vepdir, targetlist, targetfile, type="del")
+        
+        delcountsdf = pd.DataFrame()
+        delscoredf = pd.DataFrame()
+        for t in targetlist:
+            try:
+                tdf = loadDeletionCounts(args, targetfile, t)
+            except:
+                sys.stderr.write("WARN: couldn't load deletion counts for target %s, skipping\n" % t)
+                continue
+            delcountsdf = pd.concat([delcountsdf, tdf])
+            tscoresdf = scoreDeletionTarget(args, tdf, t)
+            delscoredf = pd.concat([delscoredf, tscoresdf])
+
+        # now done with individual deletion targets, so we need to collapse dups
+        deldupdf = delscoredf[delscoredf.duplicated("start", keep=False) == True]
+        deldupscoredf = handleDups(args, delcountsdf, deldupdf, "start")
+        delscoredf = delscoredf.merge(
+            deldupscoredf[["start", "dupscore", "dupse"]],
+            on="start", 
+            how="outer"
+        ).drop_duplicates(
+            subset=["start"]
+        )
+        # if there are scores from the duplicate workflow, use them.
+        # otherwise, use the regular scores
+        delscoredf["score"] = delscoredf["dupscore"]
+        delscoredf["standard_error"] = delscoredf["dupse"]
+        delscoredf.loc[delscoredf["score"].isna(), "score"] = delscoredf["modelscore"]
+        delscoredf.loc[delscoredf["standard_error"].isna(), "standard_error"] = delscoredf["modelse"]
+
+        # now merge with the annotations
+        delscoredf = delscoredf.merge(
+            delannotdf[[
+                "pos", "ref", "allele", 
+                "pos_id", "start", "end",
+                "Consequence",
+                "amino_acid_change",
+                "hgvs_p",
+                "CDS_position",
+                "cDNA_position",
+                "warn_codon"
+            ]],
+            on=["start", "end"]
+        )
+        delscoredf["variant_type"] = "deletion"
+
+    else: # deletion_mode is False
+        delscoredf = pd.DataFrame()
+
+    # concatenate the scores and annots into one big df
+    scoredf = pd.concat([snvscoredf, delscoredf])
     scoredf["95_ci_upper"] = scoredf["score"] + (1.96 * scoredf["standard_error"])
     scoredf["95_ci_lower"] = scoredf["score"] - (1.96 * scoredf["standard_error"])
-    scoredf = scoredf.merge(
-        annotdf[["pos_id", "Consequence",
-                 "amino_acid_change", "hgvs_p",
-                 "CDS_position", "cDNA_position",
-                 "warn_codon"]],
-        on="pos_id"
-    )
-
     scoredf["simplified_consequence"] = scoredf["Consequence"].apply(
         get_simplified_consequence,
         ensemblfile=args.ensemblfile
@@ -717,10 +1103,22 @@ def main():
         columns={'simplified_consequence': 'consequence',
                  'allele': 'alt'}
     )
-    
+
+    # assign QC flag
     scoredf["variant_qc_flag"] = "PASS"
     scoredf.loc[scoredf["warn_codon"] == "WARN", "variant_qc_flag"] = "WARN"
-    if scoredf.shape[0] >= args.minfunc:
+
+    if args.outputsnvcounts and snv_mode:
+        saveSNVCounts(args, snvcountsdf)
+
+    if args.outputdeletioncounts and deletion_mode:
+        saveDeletionCounts(args, delcountsdf)
+        
+
+    # ------------------------------------------------------------
+    # create functional classes if we have enough variants
+    # ------------------------------------------------------------
+    if scoredf.shape[0] >= args.minfunc and snv_mode:
         if args.verbose:
             sys.stderr.write(
                 "INFO: Dataset has at least %d variants (%d); proceeding with functional class assignment\n" % (
@@ -736,7 +1134,7 @@ def main():
     else:
         if args.verbose:
             sys.stderr.write(
-                "INFO: Dataset has less than %d variants (%d); not performing functional class assignment\n" % (
+                "INFO: Dataset has less than %d variants (%d) or --nosnvs was specified; not performing functional class assignment\n" % (
                     args.minfunc,
                     scoredf.shape[0]
                 )
@@ -744,11 +1142,12 @@ def main():
         scoredf["functional_consequence"] = ""
         scoredf["gmm_density_abnormal"] = ""
         scoredf["gmm_density_normal"] = ""
-               
-    if args.outputcounts:
-        saveCounts(args, countsdf)
 
-        
+
+    # ------------------------------------------------------------
+    # output
+    # ------------------------------------------------------------
+
     scoredf = scoredf[[
         "chrom", "pos", "ref", "alt", "exon", "target",
         "consequence", "score", 
@@ -759,10 +1158,9 @@ def main():
         "variant_qc_flag",
     ]]
 
-    saveSNVScores(args, scoredf)
+    saveScores(args, scoredf)
     return 0
     
-
 
 if __name__ == '__main__':
     main()
