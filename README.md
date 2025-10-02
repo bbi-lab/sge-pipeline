@@ -10,7 +10,7 @@ This repository holds the analysis code and supporting files necessary for compu
 ## Installation
 1. create a sge conda environment:
 ```
-$ mamba env create -f /net/bbi/vol1/data/sge-analysis/etc/sge.environment.yaml
+$ mamba env create -f conda-sge.yaml
 ```
 
 2. stick the python library code from `lib` into your site-python somewhere
@@ -139,15 +139,26 @@ $ $SGEDIR/bin/getVariantAnnotations \
 Once you have generated all of the per-variant counts files, you will want to compute scores
 
 ```
-$SGEDIR/bin/scoreSNVs \
-  -v
-  -o ${GENE}.snvscores.tsv \
-  -z ${GENE}.thresholds.tsv \
-  -c /path/to/counts/${GENE} \
+echo "creating scores for YFG"
+GENE=YFG && $SGEDIR/bin/scoreVariants \
+  -v \
+  -t /net/bbi/vol1/data/sge-analysis/etc/${GENE}/targets.tsv \
+  -o /net/bbi/vol1/data/sge-analysis/scratch/scores/${GENE}.allscores.tsv \
+  -C /net/bbi/vol1/data/sge-analysis/scratch/scores/${GENE}.snvcounts.tsv \
+  -D /net/bbi/vol1/data/sge-analysis/scratch/scores/${GENE}.delcounts.tsv \
+  -E /net/bbi/vol1/data/sge-analysis/scratch/scores/${GENE}.modelparams.tsv \
+  -c /net/bbi/vol1/data/sge-analysis/counts/${GENE} \
   -g ${GENE} \
+  -x BARD1_X4J \
+  -X BARD1_X1A,BARD1_X1B,BARD1_X11A,BARD1_X11B,BARD1_X11C,BARD1_X11D \
+  -f 5 \
+  -d 5,13 \
+  -m 10 \
+  -r 54322 \
+  2>&1 | tee YFG.scoreVariants.log
 ```
 
-For a complete list of options, see `scoreSNVs --help`
+For a complete list of options, see `scoreVariants --help`
 
 
 
