@@ -149,8 +149,8 @@ GENE=YFG && $SGEDIR/bin/scoreVariants \
   -E /net/bbi/vol1/data/sge-analysis/scratch/scores/${GENE}.modelparams.tsv \
   -c /net/bbi/vol1/data/sge-analysis/counts/${GENE} \
   -g ${GENE} \
-  -x BARD1_X4J \
-  -X BARD1_X1A,BARD1_X1B,BARD1_X11A,BARD1_X11B,BARD1_X11C,BARD1_X11D \
+  -x YFG_X2 \
+  -X YFG_X1A,YFG_X1B,YFG_X11A,YFG_X11B,YFG_X11C \
   -f 5 \
   -d 5,13 \
   -m 10 \
