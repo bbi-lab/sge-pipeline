@@ -359,7 +359,7 @@ def runModelDups(row, days):
 def handleDups(args, countsdf, dupdf, dupid):
     # dupid is one of "start" or "pos_id"
     if args.verbose:
-        sys.stderr.write("INFO: Collapsing scores of duplicated deletions\n")
+        sys.stderr.write("INFO: Collapsing scores of duplicated variants\n")
     filtdf = countsdf[countsdf[dupid].isin(dupdf[dupid])]
     if args.verbose:
         sys.stderr.write("INFO: identified %d duplicate entries\n" % filtdf.shape[0])
@@ -476,8 +476,8 @@ def smootheDeletionFreqs(args, df, daycounts):
 
     allcoords = df["start"].unique()
     if args.verbose:
-        print("INFO: smoothing started with %d dels" % fullcount)
-        print("INFO: after filtering with threshold=%f, %d dels remain" % (0.5,
+        sys.stderr.write("INFO: smoothing started with %d dels\n" % fullcount)
+        sys.stderr.write("INFO: after filtering with threshold=%f, %d dels remain\n" % (0.5,
                                                                            filtcount))
 
     for col in filtercols:
