@@ -241,10 +241,10 @@ def getAnnots(args, vepdir, targetlist, targetfile, type="snv"):
                     vepdf[
                         ["chrom", "pos", "start", "end",
                          "allele",
-                        "pos_id", "amino_acid_change",
-                        "Consequence", "hgvs_p",
-                        "CDS_position", "cDNA_position",
-                        "Protein_position"]
+                         "pos_id", "amino_acid_change",
+                         "Consequence", "hgvs_p", "hgvs_g",
+                         "CDS_position", "cDNA_position",
+                         "Protein_position"]
                     ]
                 ]
             )
@@ -272,7 +272,7 @@ def getAnnots(args, vepdir, targetlist, targetfile, type="snv"):
                         ["chrom", "pos", "start", "end",
                          "ref", "allele", 
                          "pos_id", "amino_acid_change", 
-                         "Consequence", "hgvs_p", 
+                         "Consequence", "hgvs_p", "hgvs_g",
                          "CDS_position", "cDNA_position"
                          ]
                     ]   
@@ -1020,6 +1020,7 @@ def main():
                 "Consequence",
                 "amino_acid_change",
                 "hgvs_p",
+                "hgvs_g",
                 "CDS_position", 
                 "cDNA_position",
                 "warn_codon"
@@ -1078,6 +1079,7 @@ def main():
                 "Consequence",
                 "amino_acid_change",
                 "hgvs_p",
+                "hgvs_g",
                 "CDS_position",
                 "cDNA_position",
                 "warn_codon"
@@ -1152,7 +1154,7 @@ def main():
         "chrom", "pos", "ref", "alt", "exon", "target",
         "consequence", "score", 
         "standard_error", "95_ci_upper", "95_ci_lower",
-        "amino_acid_change", "hgvs_p", "CDS_position", "cDNA_position", 
+        "amino_acid_change", "hgvs_p", "hgvs_g", "CDS_position", "cDNA_position", 
         "functional_consequence",
         "gmm_density_abnormal", "gmm_density_normal",
         "variant_qc_flag",

@@ -47,17 +47,26 @@ def writeDelVCF(target, args):
                 continue
             if not len(refallele) == 4: continue
             altallele = refbase
-            outline = f"{target.chrom}\t{target.ampstartpos + index}\t.\t{refallele}\t{altallele}\t.\tPASS\t.\n"
+            outline = f"{chrom}\t{target.ampstartpos + index}\t.\t{refallele}\t{altallele}\t.\tPASS\t.\n"
             outvcf.write(outline)
     return outfile   
 
 
 def annotateWithVEP(args, invcf):
     outfile = invcf.replace(".skeleton.vcf", ".vep.tsv")
-    subprocess.run(["vep", "--force_overwrite", "--pick",
-                    "--cache", "--dir_cache", 
+    subprocess.run(["vep",
+                    "--force_overwrite",
+                    "--pick",
+                    "--dir_cache", 
                     "/net/bbi/vol1/nobackup/external/vep/GRCh38",
-                    "--no_stats", "--hgvs", "--mane_select",
+                    "--database",
+                    "--host",
+                    "useastdb.ensembl.org",
+                    "--no_stats",
+                    "--hgvs",
+                    "--hgvsg",
+                    "--hgvsg_use_accession",
+                    "--mane_select",
                     "-i", invcf,
                     "-o", outfile])
     return outfile
