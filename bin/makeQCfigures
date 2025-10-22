@@ -84,10 +84,9 @@ def make_uniformity_figures(target, libfile):
     return chart
 
 
-def make_correlation_figures(target, sampledict, day, maxcount=100000):
+def make_correlation_figures(target, sampledict, day, args):
+    maxcount = args.maxcount
     figlist = []
-    #if len(sampledict[day]) == 1:
-    #    return figlist
     for index, repl1 in enumerate(sampledict[day]):
         fn = repl1.split("/")[-1]
         parts = fn.split(".")[0].split("_")
@@ -135,7 +134,8 @@ def make_correlation_figures(target, sampledict, day, maxcount=100000):
     return figlist
 
 
-def make_counts_figures(target, sampledict, day, maxcount=1000000):
+def make_counts_figures(target, sampledict, day, args):
+    maxcount = args.maxcount
     figlist = []
     sampledict[day] = sorted(sampledict[day])
     nsamples = len(sampledict[day])
@@ -430,8 +430,8 @@ def build_figure(target, args):
         correlationplots = {}
         logratioplots = {}
         for d in days:
-            countsplots[d] = make_counts_figures(target, sampledict, d)
-            correlationplots[d] = make_correlation_figures(target, sampledict, d, args.maxcount)
+            countsplots[d] = make_counts_figures(target, sampledict, d, args)
+            correlationplots[d] = make_correlation_figures(target, sampledict, d, args)
             logratioplots[d] = make_log2ratio_figures(target, sampledict, vepfile, d)
             
         # mws edits June 10
@@ -525,19 +525,46 @@ def build_figure(target, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='makeQCfigures',
-                                     description='create QC figures for an SGE target as an HTML page')
-    parser.add_argument('-n', '--targetname', required=True,
-                        help="Target name -- must match entry in <targetfile>")
-    parser.add_argument('-t', '--targetfile', required=False, default="",
-                        help="File containing list of targets and expected edits (def. /net/bbi/vol1/data/sge-analysis/etc/<gene>/targets.tsv)")
-    parser.add_argument('-c', '--countsdir', nargs="+", required=False,
-                        help="Directory containing counts files")
-    parser.add_argument('-p', '--pending', required=False, default=False, action="store_true",
-                        help="Automatically look for files in sge-seq/pending and sge-seq/release")
-    parser.add_argument('-o', '--outfile', required=True, help="Output file, must end with .html (html format) or .png (PNG format)")
-    parser.add_argument('-m', '--maxcount', required=False, default=100000, type=int,
-                        help="Filter out any positions with counts above <maxcount>")
+    parser = argparse.ArgumentParser(
+        prog='makeQCfigures',
+        description='create QC figures for an SGE target as an HTML page'
+    )
+    parser.add_argument(
+        '-n', '--targetname',
+        required=True,
+        help="Target name -- must match entry in <targetfile>"
+    )
+    parser.add_argument(
+        '-t', '--targetfile',
+        required=False,
+        default="",
+        help="File containing list of targets and expected edits (def. /net/bbi/vol1/data/sge-analysis/etc/<gene>/targets.tsv)"
+    )
+    parser.add_argument(
+        '-c', '--countsdir',
+        nargs="+",
+        required=False,
+        help="Directory containing counts files"
+    )
+    parser.add_argument(
+        '-p', '--pending',
+        required=False,
+        default=False,
+        action="store_true",
+        help="Automatically look for files in sge-seq/pending and sge-seq/release"
+    )
+    parser.add_argument(
+        '-o', '--outfile',
+        required=True,
+        help="Output file, must end with .html (html format) or .png (PNG format)"
+    )
+    parser.add_argument(
+        '-m', '--maxcount',
+        required=False,
+        default=100000,
+        type=int,
+        help="Filter out any positions with counts above <maxcount>"
+    )
     
     args = parser.parse_args()
     if not args.countsdir and not args.pending:
