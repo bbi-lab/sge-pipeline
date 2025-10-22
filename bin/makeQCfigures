@@ -3,9 +3,9 @@
 import os
 import sys
 import argparse
-from collections import defaultdict
+import glob
+from textwrap import wrap, fill
 
-import pysam
 import numpy as np
 import pandas as pd
 import altair as alt
@@ -15,6 +15,49 @@ import sge_target
 import sge_counts
 import sge_util
 import sge_altair
+
+
+palette = [
+    '#006616', # dark green,
+    '#81B4C7', # dusty blue
+    '#ffcd3a', # yellow
+    '#6AA84F', # med green
+    '#93C47D', # light green
+    '#888888', # med gray
+    '#000000', # black
+    '#1170AA', # darker blue
+    '#CFCFCF' # light gray
+]
+
+
+variant_types = [
+    'synonymous_variant',
+    'missense_variant',  
+    'stop_gained',
+    'intron_variant', 
+    'UTR_variant',
+    'stop_lost',
+    'start_lost',
+    'splice_site_variant', 
+    'splicing_variant',
+]
+
+def get_simplified_consequence(vep_terms, ensemblfile):
+    consequence_df = pd.read_csv(ensemblfile, sep='\t')
+    # Create a dictionary mapping terms to their SO summary term (prioritizing importance)
+    mapping_dict = (
+        consequence_df.sort_values(by="Importance", ascending=False)
+        .groupby("VEP output term")[["SO summary term", "Importance"]]
+        .first()
+        .to_dict()["SO summary term"]
+    )
+    if not isinstance(vep_terms, str):
+        return "Unknown"
+    terms = vep_terms.split(',')
+    matched_terms = [mapping_dict.get(term.strip()) for term in terms if term.strip() in mapping_dict]
+
+    return matched_terms[0] if matched_terms else "Unknown"
+
 
 def make_uniformity_figures(target, libfile):
     libdf = sge_counts.getSNVCounts(libfile, augment=False, pseudocount=0)
@@ -41,7 +84,8 @@ def make_uniformity_figures(target, libfile):
     return chart
 
 
-def make_correlation_figures(target, sampledict, day, maxcount=100000):
+def make_correlation_figures(target, sampledict, day, args):
+    maxcount = args.maxcount
     figlist = []
     for index, repl1 in enumerate(sampledict[day]):
         fn = repl1.split("/")[-1]
@@ -74,8 +118,8 @@ def make_correlation_figures(target, sampledict, day, maxcount=100000):
             # compute SNV correlation
             mycorr = tmpdf[["count_s1", "count_s2"]].corr().iloc[0,1]
             p = alt.Chart(tmpdf).mark_point().encode(
-                x=alt.X("count_s1:Q", title="%s"% repl1.split("/")[-1].split(".")[0]).scale(type='log'),
-                y=alt.Y("count_s2:Q", title="%s"% repl2.split("/")[-1].split(".")[0]).scale(type='log'),
+                x=alt.X("count_s1:Q", title=wrap(repl1, width=40)).scale(type='log').axis(titleFontSize=8),#"%s"% repl1.split("/")[-1].split(".")[0]).scale(type='log'),
+                y=alt.Y("count_s2:Q", title=wrap(repl2, width=40)).scale(type='log').axis(titleFontSize=8),#"%s"% repl2.split("/")[-1].split(".")[0]).scale(type='log'),
 
             )
             t = alt.Chart({'values':[{}]}).mark_text(
@@ -85,12 +129,13 @@ def make_correlation_figures(target, sampledict, day, maxcount=100000):
                 y=alt.value(5),  # pixels from top
                 text=alt.value(f"r: {mycorr:.3f}"),
             )
-            figlist.append(p + t + p.transform_regression("count_s1", "count_s2").mark_line())
+            figlist.append(p + t)# + p.transform_regression("count_s2", "count_s1").mark_line())
     
     return figlist
 
 
-def make_counts_figures(target, sampledict, day, maxcount=100000):
+def make_counts_figures(target, sampledict, day, args):
+    maxcount = args.maxcount
     figlist = []
     sampledict[day] = sorted(sampledict[day])
     nsamples = len(sampledict[day])
@@ -114,9 +159,9 @@ def make_counts_figures(target, sampledict, day, maxcount=100000):
                 ),
                 y=alt.Y(
                     'count:Q',
-                    title="Count in %s" % repl1.split("/")[-1].split(".")[0].split("_",2 )[2],
+                    title=wrap(repl1, width=40),#repl1.split("/")[-1].split(".")[0].split("_",2 )[2],
                     scale=alt.Scale()
-                ),
+                ).axis(titleFontSize=8),
                 color=alt.Color('allele:N', title="Allele"),
             )
         else:
@@ -131,8 +176,8 @@ def make_counts_figures(target, sampledict, day, maxcount=100000):
                 ),
                 y=alt.Y(
                     'count:Q',
-                    title="Count in %s" % repl1.split("/")[-1].split(".")[0].split("_",2 )[2],
-                    scale=alt.Scale()),
+                    title=wrap(repl1, width=40),#repl1.split("/")[-1].split(".")[0].split("_",2 )[2],
+                    scale=alt.Scale()).axis(titleFontSize=8),
                 color=alt.Color('allele:N', title="Allele"),
             )
         figlist.append(a)
@@ -171,7 +216,8 @@ def make_log2ratio_figures(target, sampledict, vepfile, day):
         #sampleid = tmpdf["sampleid"][0]
         sampleid = snvfile.replace(".snvs.tsv", "").split("/")[-1]
         parts = sampleid.split("_")
-        repl = parts[2]
+        #repl = parts[2]
+        repl = '_'.join(parts[2:])
         countcol = "%s_%s" % (day, repl)
         tmpdf = tmpdf.rename(columns={'count': countcol})
         freqcol = countcol + "_freq"
@@ -202,8 +248,14 @@ def make_log2ratio_figures(target, sampledict, vepfile, day):
     vepdf = sge_util.getVEPdf(vepfile)
     df = df.merge(vepdf[["pos", "allele", "Consequence"]],
                   on=["pos", "allele"])
-    df['Consequence'] = df['Consequence'].map(lambda x: x.split(",")[0])
-    df["shortconsequence"] = df["Consequence"].map(lambda x: x.split("_")[0])
+    
+    df["simplified_consequence"] = df["Consequence"].apply(
+        get_simplified_consequence,
+        ensemblfile="/net/bbi/vol1/data/sge-analysis/etc/extended_ensembl_consequence.tsv"
+    )
+
+    #df['Consequence'] = df['Consequence'].map(lambda x: x.split(",")[0])
+    #df["shortconsequence"] = df["Consequence"].map(lambda x: x.split("_")[0])
 
     for index, c in enumerate(cols_to_plot):
         title = c.replace("_over_lib_log2", "")
@@ -222,9 +274,9 @@ def make_log2ratio_figures(target, sampledict, vepfile, day):
                     title=title,
                 ),
                 color=alt.Color(
-                    'shortconsequence:N',
+                    'simplified_consequence:N',
                     title="Variant type"
-                ),
+                ).scale(range=palette, domain=variant_types),
             )
         else:
             a = alt.Chart(df, height=150, width=1000).mark_point(filled=True, size=50).encode(
@@ -242,13 +294,13 @@ def make_log2ratio_figures(target, sampledict, vepfile, day):
                     title=title
                 ),
                 color=alt.Color(
-                    'shortconsequence:N',
+                    'simplified_consequence:N',
                     title="Variant type"
-                ),
+                ).scale(range=palette, domain=variant_types),
             )
         figlist.append(a)
         
-    meltdf = pd.melt(df, id_vars=['target', 'gene', 'pos_id', 'shortconsequence'], value_vars=cols_to_plot)
+    meltdf = pd.melt(df, id_vars=['target', 'gene', 'pos_id', 'simplified_consequence'], value_vars=cols_to_plot)
     repfig = alt.Chart(
         meltdf[~meltdf["value"].isna()],
         height=200,
@@ -269,49 +321,133 @@ def make_log2ratio_figures(target, sampledict, vepfile, day):
             scale=alt.Scale()
         ),
         color=alt.Color(
-            'shortconsequence:N',
+            'simplified_consequence:N',
             title="Variant type",
-            scale=alt.Scale(
-                scheme="category10"
-            )
-        )
+            #scale=alt.Scale(
+            #    scheme="category10"
+        ).scale(range=palette, domain=variant_types)
     )
+    
     figlist.append(repfig)
     return figlist
 
 
+
+def getSNVSamplesPendingRelease(target, include_neg=False):
+    '''performs a directory lookup of all SNV counts files matching a 
+    specific target name in the pending and release directories
+    and returns a dictionary of filenames:
+    (string) day --> [ (string) full_filename1, (string) full_filename2, ... ]
+
+    if include_neg is True, the negative control sample is included; otherwise it is
+    excluded from the list of samples
+
+    '''
+    samples = {}
+    pendingdir = "/net/bbi/vol1/data/sge-seq/pending/counts/%s/" % target.gene
+    releasedir = "/net/bbi/vol1/data/sge-seq/release/counts/%s/" % target.gene
+
+    for fullfn in glob.glob("%s/%s_*.snvs.tsv" % (pendingdir, target.targetname)):
+        fn = fullfn.split("/")[-1]
+        parts = fn.split(".")[0].split("_")
+        repl = parts[2]
+        if not include_neg:
+            if repl == 'NC': # throw out the negative control
+                continue
+        day = parts[3]
+        if day not in samples:
+            samples[day] = []
+        samples[day].append(fullfn)
+
+    for fullfn in glob.glob("%s/%s_*.snvs.tsv" % (releasedir, target.targetname)):
+        fn = fullfn.split("/")[-1]
+        parts = fn.split(".")[0].split("_")
+        repl = parts[2]
+        if not include_neg:
+            if repl == 'NC': # throw out the negative control
+                continue
+        day = parts[3]
+        if day not in samples:
+            samples[day] = []
+        samples[day].append(fullfn)
+
+    return samples
+
+
+def getSNVCountsFilesFromDir(target, dir, samples={}, include_neg=False):
+    sys.stderr.write("INFO: looking for counts in %s\n" % dir)
+    for fullfn in glob.glob("%s/%s_*.snvs.tsv" % (dir, target.targetname)):
+
+        fn = fullfn.split("/")[-1]
+        parts = fn.split(".")[0].split("_")
+        repl = parts[2]
+        if not include_neg:
+            if repl == 'NC': # throw out the negative control
+                continue
+        day = parts[3]
+        if day not in samples:
+            samples[day] = []
+        samples[day].append(fullfn)
+        sys.stderr.write("INFO: found %s, day %s\n" % (fullfn, day))
+
+    return samples
+
+
 def build_figure(target, args):
-    try:
-        sampledict = target.getSNVSampleList(args.countsdir, include_neg=False)            
-    except:
-        sys.stderr.write("ERROR: unable to get sample list from %s, exiting\n" % args.countsdir)
-        sys.exit(-99)
+    if args.pending:
+        sampledict = getSNVCountsFilesFromDir(
+            target, 
+            "/net/bbi/vol1/data/sge-seq/pending/counts/%s/" % target.gene
+        )
+        sampledict = getSNVCountsFilesFromDir(
+            target, 
+            "/net/bbi/vol1/data/sge-seq/release/counts/%s/" % target.gene, 
+            sampledict
+        )
+    else:
+        sampledict = {}
+        for dir in args.countsdir:
+            try:
+                sampledict = getSNVCountsFilesFromDir(
+                    target, 
+                    dir, 
+                    sampledict
+                )
+            except:
+                sys.stderr.write("ERROR: unable to get sample list from %s, exiting\n" % dir)
+                sys.exit(-99)
+
         
     try:
         vepfile = "/net/bbi/vol1/data/sge-analysis/etc/%s/%s.snvs.vep.tsv" % (target.gene, target.targetname)
         chart = make_uniformity_figures(target, sampledict["D00"][0])
-        sampledict = target.getSNVSampleList(args.countsdir, include_neg=True)            
+        #sampledict = target.getSNVSampleList(args.countsdir, include_neg=True)            
         days = sorted(sampledict.keys())
         if days[0] == "D00":
             days = days[1:]
+        sys.stderr.write("INFO: will process data from days %s\n" % (", ".join(days)))
         countsplots = {}
         correlationplots = {}
         logratioplots = {}
         for d in days:
-            countsplots[d] = make_counts_figures(target, sampledict, d)
-            correlationplots[d] = make_correlation_figures(target, sampledict, d, args.maxcount)
+            countsplots[d] = make_counts_figures(target, sampledict, d, args)
+            correlationplots[d] = make_correlation_figures(target, sampledict, d, args)
             logratioplots[d] = make_log2ratio_figures(target, sampledict, vepfile, d)
             
         # mws edits June 10
         corrlayouts = []
         for d in days:
-            layout = correlationplots[d][0]
-            for cplot in correlationplots[d][1:]:
-                layout |= cplot
-            layout = layout.properties(
-                title='Pearson correlation. day %s' % d
-            )
-            corrlayouts.append(layout)
+            #print("working on",  d)
+            if len(correlationplots[d]) > 0:
+                layout = correlationplots[d][0]
+                for cplot in correlationplots[d][1:]:
+                    layout |= cplot
+                layout = layout.properties(
+                    title='Pearson correlation. day %s' % d
+                )
+                corrlayouts.append(layout)
+            else:
+                layout = None
         
 
         countslayouts = []
@@ -389,19 +525,51 @@ def build_figure(target, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='makeQCfigures',
-                                     description='create QC figures for an SGE target as an HTML page')
-    parser.add_argument('-n', '--targetname', required=True,
-                        help="Target name -- must match entry in <targetfile>")
-    parser.add_argument('-t', '--targetfile', required=False, default="",
-                        help="File containing list of targets and expected edits (def. /net/bbi/vol1/data/sge-analysis/etc/<gene>/targets.tsv)")
-    parser.add_argument('-c', '--countsdir', required=True,
-                        help="Directory containing counts files")
-    parser.add_argument('-o', '--outfile', required=True, help="Output file, must end with .html (html format) or .png (PNG format)")
-    parser.add_argument('-m', '--maxcount', required=False, default=100000, type=int,
-                        help="Filter out any positions with counts above <maxcount>")
+    parser = argparse.ArgumentParser(
+        prog='makeQCfigures',
+        description='create QC figures for an SGE target as an HTML page'
+    )
+    parser.add_argument(
+        '-n', '--targetname',
+        required=True,
+        help="Target name -- must match entry in <targetfile>"
+    )
+    parser.add_argument(
+        '-t', '--targetfile',
+        required=False,
+        default="",
+        help="File containing list of targets and expected edits (def. /net/bbi/vol1/data/sge-analysis/etc/<gene>/targets.tsv)"
+    )
+    parser.add_argument(
+        '-c', '--countsdir',
+        nargs="+",
+        required=False,
+        help="Directory containing counts files"
+    )
+    parser.add_argument(
+        '-p', '--pending',
+        required=False,
+        default=False,
+        action="store_true",
+        help="Automatically look for files in sge-seq/pending and sge-seq/release"
+    )
+    parser.add_argument(
+        '-o', '--outfile',
+        required=True,
+        help="Output file, must end with .html (html format) or .png (PNG format)"
+    )
+    parser.add_argument(
+        '-m', '--maxcount',
+        required=False,
+        default=100000,
+        type=int,
+        help="Filter out any positions with counts above <maxcount>"
+    )
     
     args = parser.parse_args()
+    if not args.countsdir and not args.pending:
+        sys.stderr.write("ERROR: must provide either -c <dir> or -p\n")
+        sys.exit(-99)
 
     if not args.outfile.endswith(".html") and not args.outfile.endswith(".png"):
         sys.stderr.write("ERROR: the output file does not end with .html or .png\n")
