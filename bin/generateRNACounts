@@ -89,7 +89,7 @@ def processInputFile(args, cdna_required_edits, cdna_skip_pos, cigar):
 
     '''
     if args.maxreads < 1:
-        maxreads = np.Inf
+        maxreads = np.inf
     else:
         maxreads = args.maxreads
     

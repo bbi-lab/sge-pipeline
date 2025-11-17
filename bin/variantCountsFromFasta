@@ -29,7 +29,7 @@ def processInputFile(args):
     unmatched = 0
     readstats = {'total_reads': 0}
     if args.maxreads < 1:
-        maxreads = np.Inf
+        maxreads = np.inf
     else:
         maxreads = args.maxreads
 
