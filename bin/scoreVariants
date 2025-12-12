@@ -868,7 +868,11 @@ def main():
         '-F', '--minfunc', required=False, default=1000, type=int,
         help="Minimum number of scored variants required before functional class assignment"
     )
-                        
+    parser.add_argument(
+        '-W', '--nowarn', required=False, default=False,
+        action="store_true",
+        help="Do not output WARN variants"
+    )
     args = parser.parse_args()
     snv_mode = True
     if args.nosnvs:
@@ -1159,7 +1163,10 @@ def main():
         "gmm_density_abnormal", "gmm_density_normal",
         "variant_qc_flag",
     ]]
-
+    # remove WARN variants if requested
+    if args.nowarn:
+        scoredf = scoredf[scoredf["variant_qc_flag"] != "WARN"]
+        
     saveScores(args, scoredf)
     return 0
     
