@@ -5,7 +5,7 @@ import sys
 import subprocess
 import pandas as pd
 
-sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+sys.path.append("/net/bbi/vol1/data/sge-analysis/git/sge-pipeline/lib/")
 import sge_target
 
 # vcf is 1-based
@@ -52,7 +52,7 @@ def writeDelVCF(target, args):
     return outfile   
 
 
-def annotateWithVEP(args, invcf):
+def annotateWithVEP(args, invcf, tid):
     outfile = invcf.replace(".skeleton.vcf", ".vep.tsv")
     subprocess.run(["vep",
                     "--force_overwrite",
@@ -67,6 +67,8 @@ def annotateWithVEP(args, invcf):
                     "--hgvsg",
                     "--hgvsg_use_accession",
                     "--mane_select",
+                    "--transcript_filter",
+                    "stable_id is %s" % tid,
                     "-i", invcf,
                     "-o", outfile])
     return outfile
@@ -99,14 +101,15 @@ def main():
     
     for t in targets:
         target = sge_target.Target(t, args.targetfile)
+        tid = target.tid
         if args.verbose:
             print("INFO: processing target %s from %s" % (t, args.targetfile))
         skeleton_vcf = writeSNVVCF(target, args)
-        outfile = annotateWithVEP(args, skeleton_vcf)
+        outfile = annotateWithVEP(args, skeleton_vcf, tid)
         if args.verbose:
             print("INFO: wrote annotated SNV output to %s" % outfile)
         skeleton_vcf = writeDelVCF(target, args)
-        outfile = annotateWithVEP(args, skeleton_vcf)
+        outfile = annotateWithVEP(args, skeleton_vcf, tid)
         if args.verbose:
             print("INFO: wrote annotated deletion output to %s" % outfile)
     return 0

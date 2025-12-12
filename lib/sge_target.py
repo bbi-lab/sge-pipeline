@@ -27,7 +27,8 @@ class Target:
         self.editregion = self.chrom + "+"
         self.ampstartpos = targetdf.loc[targetdf["target"] == targetname, "ampstart"].values[0]
         self.ampendpos = targetdf.loc[targetdf["target"] == targetname, "ampstop"].values[0]
-
+        self.tid = targetdf.loc[targetdf["target"] == targetname, "transcript_id"].values[0]
+                                                                                          
         # region strings
         self.editregionstring = self.chrom + ":" + str(self.editstartpos) + "-" + str(self.editendpos)
         self.ampregionstring = self.chrom + ":" + str(self.ampstartpos) + "-" + str(self.ampendpos)
