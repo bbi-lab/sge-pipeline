@@ -5,7 +5,7 @@ import sys
 import subprocess
 import pandas as pd
 
-sys.path.append("/net/bbi/vol1/data/sge-analysis/git/sge-pipeline/lib/")
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
 import sge_target
 
 # vcf is 1-based
