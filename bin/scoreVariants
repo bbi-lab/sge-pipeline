@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import os
 import string
+import glob
 
 sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
 import sge_util
@@ -21,23 +22,6 @@ from scipy.stats import linregress
 from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
 
-
-# Function to assign the most important SO summary term
-def get_simplified_consequence(vep_terms, ensemblfile):
-    consequence_df = pd.read_csv(ensemblfile, sep='\t')
-    # Create a dictionary mapping terms to their SO summary term (prioritizing importance)
-    mapping_dict = (
-        consequence_df.sort_values(by="Importance", ascending=False)
-        .groupby("VEP output term")[["SO summary term", "Importance"]]
-        .first()
-        .to_dict()["SO summary term"]
-    )
-    if not isinstance(vep_terms, str):  
-        return "Unknown"
-    terms = vep_terms.split(',')  
-    matched_terms = [mapping_dict.get(term.strip()) for term in terms if term.strip() in mapping_dict]
-    
-    return matched_terms[0] if matched_terms else "Unknown"
 
 
 def find_nearest(array, value):
@@ -413,6 +397,65 @@ def scoreDeletionTarget(args, tdf, t):
     return resdf
 
 
+def scoreRNAVariants(args, rnacountsdf, snvcountsdf):
+    if args.verbose:
+        sys.stderr.write("INFO: scoring RNA variants\n")
+    snvcountsdf = snvcountsdf.rename(
+        columns={'allele': 'alt'}
+    )
+    mergedf = snvcountsdf.merge(rnacountsdf, on=["chrom", "pos", "alt", "target"], how="inner")
+    mergedf["rna_ratio_R1"] = mergedf["rna_freq_R1"] / mergedf["D05_R1_freq"]
+    mergedf["rna_ratio_R2"] = mergedf["rna_freq_R2"] / mergedf["D05_R2_freq"]
+    mergedf["rna_ratio_R3"] = mergedf["rna_freq_R3"] / mergedf["D05_R3_freq"]
+
+    mergedf["rna_ratio_R1"] = mergedf["rna_ratio_R1"].replace([np.inf, -np.inf], np.nan)
+    mergedf["rna_ratio_R2"] = mergedf["rna_ratio_R2"].replace([np.inf, -np.inf], np.nan)
+    mergedf["rna_ratio_R3"] = mergedf["rna_ratio_R3"].replace([np.inf, -np.inf], np.nan)
+
+    mergedf["RNA_DNA_ratio"] = mergedf[["rna_ratio_R1", "rna_ratio_R2", "rna_ratio_R3"]].median(
+        axis=1, 
+        skipna=True
+    )
+    mergedf["RNA_DNA_ratio_log2"] = np.log2(mergedf["RNA_DNA_ratio"])
+    mergedf.to_csv("/net/bbi/vol1/data/sge-analysis/work/20260219.jointscores/mergedf.tsv", 
+                   sep="\t", index=False)
+    return mergedf
+
+
+def scoreRNAVariantsRecount(args, rnacountsdf, snvcountsdf):
+    if args.verbose:
+        sys.stderr.write("INFO: scoring RNA variants\n")
+    snvcountsdf = snvcountsdf.rename(
+        columns={'allele': 'alt'}
+    )
+    mergedf = snvcountsdf.merge(rnacountsdf, on=["chrom", "pos", "alt", "target"], how="inner")
+
+    # only use the DNA counts from the variants where we also have RNA for normalizing
+    mergedf["D05_R1_tot"] = mergedf.groupby(['target'])["D05_R1"].transform('sum')
+    mergedf["D05_R2_tot"] = mergedf.groupby(['target'])["D05_R2"].transform('sum')
+    mergedf["D05_R3_tot"] = mergedf.groupby(['target'])["D05_R3"].transform('sum')
+
+    mergedf["D05_R1_rfreq"] = mergedf["D05_R1"] / mergedf["D05_R1_tot"]
+    mergedf["D05_R2_rfreq"] = mergedf["D05_R2"] / mergedf["D05_R2_tot"]
+    mergedf["D05_R3_rfreq"] = mergedf["D05_R3"] / mergedf["D05_R3_tot"]
+
+    mergedf["rna_ratio_R1"] = mergedf["rna_freq_R1"] / mergedf["D05_R1_rfreq"]
+    mergedf["rna_ratio_R2"] = mergedf["rna_freq_R2"] / mergedf["D05_R2_rfreq"]
+    mergedf["rna_ratio_R3"] = mergedf["rna_freq_R3"] / mergedf["D05_R3_rfreq"]
+
+    mergedf["rna_ratio_R1"] = mergedf["rna_ratio_R1"].replace([np.inf, -np.inf], np.nan)
+    mergedf["rna_ratio_R2"] = mergedf["rna_ratio_R2"].replace([np.inf, -np.inf], np.nan)
+    mergedf["rna_ratio_R3"] = mergedf["rna_ratio_R3"].replace([np.inf, -np.inf], np.nan)
+
+    mergedf["RNA_DNA_ratio"] = mergedf[["rna_ratio_R1", "rna_ratio_R2", "rna_ratio_R3"]].median(
+        axis=1, 
+        skipna=True
+    )
+    mergedf["RNA_DNA_ratio_log2"] = np.log2(mergedf["RNA_DNA_ratio"])
+    mergedf.to_csv("/net/bbi/vol1/data/sge-analysis/work/20260219.jointscores/mergedfRecount.tsv", 
+                   sep="\t", index=False)
+    return mergedf
+
 # use a loess smoother to smooth the non-day5 frequencies
 def smootheSNVFreqs(args, df, daycounts):
     filtercols = [col for col in df.columns if col.startswith("D05_") \
@@ -658,6 +701,33 @@ def loadDeletionCounts(args, targetfile, t):
     return df
 
 
+def loadRNACounts(args, targetfile, t):
+    if args.verbose:
+        sys.stderr.write("INFO: working on target %s\n" % t)
+    
+    df = pd.DataFrame()
+    repls = []
+    rindex = 1
+    for fn in glob.glob("%s/%s_R*.snvs.tsv" % (args.rnacountsdir, t)):
+        if args.verbose:
+            sys.stderr.write("INFO: loading RNA data from %s\n" % fn)
+        repl = fn.split("/")[-1].split("_")[2].split(".")[0]
+        repls.append(repl)
+        tmpdf = pd.read_csv(fn, header=0, sep="\t")
+        # pseudocount
+        tmpdf["count"] = tmpdf["count"] + 1
+        mytotal = tmpdf["count"].sum()
+        tmpdf = tmpdf.rename(columns={'count': 'rna_count_R%d' % rindex}).drop(columns=['sampleid', 'target'])
+        tmpdf["rna_freq_R%d" % rindex] = tmpdf["rna_count_R%d" % rindex] / mytotal
+        rindex += 1
+        if df.shape[0] == 0:
+            df = tmpdf
+        else:
+            df = df.merge(tmpdf, on=["chrom", "pos", "allele", "cdna_pos"])
+    df["target"] = t
+    return df
+
+
 
 def loadSNVCounts(args, targetfile, t):
     if args.verbose:
@@ -814,7 +884,10 @@ def main():
         '-E', '--outputmodel', required=False, default="",
         help="Path to output TSV file of GMM component means, variances, and class thresholds"
     )    
-
+    parser.add_argument(
+        '-R', '--rnacountsdir', required=False,
+        help="Turn on RNA scoring and load counts from <rnacountsdir>"
+    )
     parser.add_argument(
         '-V', '--vepdir', required=False,
         help="Path to directory with VEP files"
@@ -1100,7 +1173,7 @@ def main():
     scoredf["95_ci_upper"] = scoredf["score"] + (1.96 * scoredf["standard_error"])
     scoredf["95_ci_lower"] = scoredf["score"] - (1.96 * scoredf["standard_error"])
     scoredf["simplified_consequence"] = scoredf["Consequence"].apply(
-        get_simplified_consequence,
+        sge_util.get_simplified_consequence,
         ensemblfile=args.ensemblfile
     )
     scoredf = scoredf.drop(
@@ -1166,7 +1239,50 @@ def main():
     # remove WARN variants if requested
     if args.nowarn:
         scoredf = scoredf[scoredf["variant_qc_flag"] != "WARN"]
+
+    # now check if we are scoring RNA as well
+    if args.rnacountsdir:
+        if args.rnacountsdir.endswith("/"):
+            args.rnacountsdir = args.rnacountsdir[:-1]
+        sys.stderr.write("INFO: proceeding to scoring RNA variants\n")
+        rnacountsdf = pd.DataFrame()
+        for t in targetlist:
+            try:
+                tdf = loadRNACounts(args, targetfile, t)
+            except:
+                sys.stderr.write("WARN: couldn't load RNA counts for target %s, skipping\n" % t)
+                continue
+            rnacountsdf = pd.concat([rnacountsdf, tdf])
+        rnacountsdf = rnacountsdf.rename(columns={'allele': 'alt'})
+        rnascoredf = scoreRNAVariantsRecount(args, rnacountsdf, snvcountsdf)
         
+        sys.stderr.write("INFO: finished scoring %d RNA variants\n" % rnascoredf.shape[0])
+        sys.stderr.write("INFO: starting collapsing of duplicated RNA variants\n")
+
+        # now dedup
+        dupdf = rnascoredf[rnascoredf.duplicated(["chrom", "pos", "alt"], keep=False) == True]
+        dupscoredf = dupdf.groupby(["chrom", "pos", "alt"])["RNA_DNA_ratio_log2"].median(    
+        ).reset_index(
+        ).rename(
+            columns={'RNA_DNA_ratio_log2': 'RNA_dup_score'}
+        )
+        rnascoredf = rnascoredf.merge(
+            dupscoredf,
+            on=["chrom", "pos", "alt"],
+            how="outer"
+        ).drop_duplicates(
+            subset=["chrom", "pos", "alt"]
+        )
+        rnascoredf["RNA_score"] = rnascoredf["RNA_dup_score"]
+        rnascoredf.loc[rnascoredf["RNA_score"].isna(), "RNA_score"] = rnascoredf["RNA_DNA_ratio_log2"]
+        sys.stderr.write("INFO: finished collapsing of duplicated RNA variants, %d remain\n" % rnascoredf.shape[0])
+
+        scoredf = scoredf.merge(
+            rnascoredf[["chrom", "pos", "alt", "RNA_score"]], on=["chrom", "pos", "alt"],
+            how="left"
+        )
+
+
     saveScores(args, scoredf)
     return 0
     
