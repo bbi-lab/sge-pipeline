@@ -29,6 +29,9 @@ def find_nearest(array, value):
     idx = (np.abs(array - value)).argmin()
     return [array[idx], idx]
 
+def merge_target_names(x):
+    return ';'.join(x)
+
 
 def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     mean_nonsense = scoredf[(scoredf["consequence"].isin(["stop_gained",])) &
@@ -99,6 +102,13 @@ def makeFunctionalClasses(args, scoredf, exclude_nonsense_coords):
     # now we get the scores that are the closest to the normal and abnormal thresholds
     closest_score_normal = closest_row_normal['score']
     closest_score_abnormal = closest_row_abnormal['score']
+
+    if closest_score_abnormal > closest_score_normal:
+        closest_score_abnormal = scoredf[(scoredf["functional_consequence"] == "functionally_abnormal") &
+                        (scoredf["variant_qc_flag"] == "PASS")]["score"].max()
+        if args.verbose:
+            sys.stderr.write("WARN: abnormal threshold is higher than normal threshold; using highest abnormal score\n")
+
     if args.verbose:
         sys.stderr.write("INFO: abnormal score threshold starting estimate: %f\n" % closest_score_abnormal)
         sys.stderr.write("INFO: normal score threshold starting estimate: %f\n" % closest_score_normal)
@@ -1071,6 +1081,13 @@ def main():
             tscoresdf = scoreSNVTarget(args, tdf, t)
             snvscoredf = pd.concat([snvscoredf, tscoresdf])
 
+        # combine multiple targets into one list
+        snvscoredf["all_targets"] = snvscoredf.groupby(
+            ["pos_id"]
+        )['target'].transform(
+            merge_target_names
+        )
+
         # now done with individual SNV targets, so we need to collapse SNV dups
         snvdupdf = snvscoredf[snvscoredf.duplicated("pos_id", keep=False) == True]
         snvdupscoredf = handleDups(args, snvcountsdf, snvdupdf, "pos_id")
@@ -1130,6 +1147,13 @@ def main():
             delcountsdf = pd.concat([delcountsdf, tdf])
             tscoresdf = scoreDeletionTarget(args, tdf, t)
             delscoredf = pd.concat([delscoredf, tscoresdf])
+
+        # combine multiple targets into one list
+        delscoredf["all_targets"] = delscoredf.groupby(
+            ["start"],
+        )['target'].transform(
+            merge_target_names
+        )
 
         # now done with individual deletion targets, so we need to collapse dups
         deldupdf = delscoredf[delscoredf.duplicated("start", keep=False) == True]
@@ -1228,14 +1252,17 @@ def main():
     # ------------------------------------------------------------
 
     scoredf = scoredf[[
-        "chrom", "pos", "ref", "alt", "exon", "target",
+        "chrom", "pos", "ref", "alt", "exon", "all_targets",
         "consequence", "score", 
         "standard_error", "95_ci_upper", "95_ci_lower",
         "amino_acid_change", "hgvs_p", "hgvs_g", "CDS_position", "cDNA_position", 
         "functional_consequence",
         "gmm_density_abnormal", "gmm_density_normal",
         "variant_qc_flag",
-    ]]
+    ]].rename(
+        columns={'all_targets': 'target'}
+    )
+
     # remove WARN variants if requested
     if args.nowarn:
         scoredf = scoredf[scoredf["variant_qc_flag"] != "WARN"]
@@ -1282,6 +1309,12 @@ def main():
             how="left"
         )
 
+    # else RNA scoring was not selected
+    else:
+        # add an empty column to the dataframe
+        if args.verbose:
+            sys.stderr.write("INFO: RNA scoring not enabled; adding empty RNA score column to dataframe\n")
+        scoredf["RNA_score"] = np.nan
 
     saveScores(args, scoredf)
     return 0

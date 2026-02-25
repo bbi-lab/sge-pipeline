@@ -35,13 +35,13 @@ def process_read(readobj, args, cdna_required_edits, cdna_skip_pos):
     for (read_offset, ref_offset, ref_base) in apairs:
         if ref_offset is None:
             continue
+        # added
+        ref_offset += 1
         if ref_offset in cdna_skip_pos:
             if args.verbose:
                 sys.stderr.write("INFO: hit position %d from skip_pos list, skipping\n" % ref_offset)
             continue
         if ref_base.islower(): # lowercase means a mismatch between ref and read
-            #print("found mismatch at %d: %s -> %s" % (ref_offset, ref_base, readobj.query_sequence[read_offset]))
-
             local_edits[ref_offset] = readobj.query_sequence[read_offset]
             if args.verbose:
                 sys.stderr.write("INFO: found mismatch at pos %d: %s --> %s\n" % (
@@ -57,6 +57,9 @@ def process_read(readobj, args, cdna_required_edits, cdna_skip_pos):
     ok = True
     for k in cdna_required_edits.keys():
         if k in local_edits and local_edits[k] == cdna_required_edits[k]:
+            if args.verbose:
+                sys.stderr.write("INFO: required edit at position %d found\n" % k)
+
             del local_edits[k]
         else:
             ok = False
@@ -89,7 +92,7 @@ def processInputFile(args, cdna_required_edits, cdna_skip_pos, cigar):
 
     '''
     if args.maxreads < 1:
-        maxreads = np.Inf
+        maxreads = np.inf
     else:
         maxreads = args.maxreads
     
@@ -154,7 +157,6 @@ def writeSNVOutputFile(target, args, vepdf):
     counts = []
 
     for cdna_pos, basedict in edits_by_pos.items():
-        cdna_pos = cdna_pos + 1
         gcoord = get_genomic_pos(vepdf, cdna_pos)
 
         if gcoord < target.editstartpos or gcoord > target.editendpos:
@@ -299,7 +301,7 @@ def main():
     vepdf["cDNA_position"] = vepdf["cDNA_position"].astype(int)
     minpos = np.nanmin(vepdf["cDNA_position"])
     maxpos = np.nanmax(vepdf["cDNA_position"])
-
+    
     # convert the genomic cooordinate skip pos to the cDNA coordinate skip pos
     cdna_skip_pos = []
     for pos in target.skip_pos:
@@ -315,7 +317,7 @@ def main():
     cdna_required_edits = {}
     for pos in target.required_edits:
         try:
-            cdna_pos = int(vepdf[vepdf["pos"] == pos]["cDNA_position"].values[0]) - 1
+            cdna_pos = int(vepdf[vepdf["pos"] == pos]["cDNA_position"].values[0]) #- 1
             if cdna_pos < minpos or cdna_pos > maxpos:
                 continue
             base = target.required_edits[pos]
@@ -341,7 +343,6 @@ def main():
 
     for x in range(minpos, maxpos + 1, 1):
         edits_by_pos[x] = {'A': 0, 'C': 0, 'G': 0, 'T': 0}
-    
     cigar = ""
     if args.cigarfile:
         try:
