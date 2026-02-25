@@ -8,6 +8,23 @@ import sge_counts
 import sge_target
 
 
+# Function to assign the most important SO summary term
+def get_simplified_consequence(vep_terms, ensemblfile):
+    consequence_df = pd.read_csv(ensemblfile, sep='\t')
+    # Create a dictionary mapping terms to their SO summary term (prioritizing importance)
+    mapping_dict = (
+        consequence_df.sort_values(by="Importance", ascending=False)
+        .groupby("VEP output term")[["SO summary term", "Importance"]]
+        .first()
+        .to_dict()["SO summary term"]
+    )
+    if not isinstance(vep_terms, str):  
+        return "Unknown"
+    terms = vep_terms.split(',')  
+    matched_terms = [mapping_dict.get(term.strip()) for term in terms if term.strip() in mapping_dict]
+    
+    return matched_terms[0] if matched_terms else "Unknown"
+
 
 def calcPairwisePearsonR(target, snvfile1, snvfile2):
     '''calculates the pairwise Pearson r between two named sample ids
