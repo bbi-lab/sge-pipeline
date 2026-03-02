@@ -358,6 +358,8 @@ def handleDups(args, countsdf, dupdf, dupid):
     filtdf = countsdf[countsdf[dupid].isin(dupdf[dupid])]
     if args.verbose:
         sys.stderr.write("INFO: identified %d duplicate entries\n" % filtdf.shape[0])
+    if filtdf.shape[0] == 0: # no duplicates to handle, so return empty dataframe
+        return pd.DataFrame(columns=[dupid, "dupscore", "dupse"])
     tmpdf = filtdf.groupby(
         [dupid]
     ).agg(
@@ -414,31 +416,6 @@ def scoreRNAVariants(args, rnacountsdf, snvcountsdf):
         columns={'allele': 'alt'}
     )
     mergedf = snvcountsdf.merge(rnacountsdf, on=["chrom", "pos", "alt", "target"], how="inner")
-    mergedf["rna_ratio_R1"] = mergedf["rna_freq_R1"] / mergedf["D05_R1_freq"]
-    mergedf["rna_ratio_R2"] = mergedf["rna_freq_R2"] / mergedf["D05_R2_freq"]
-    mergedf["rna_ratio_R3"] = mergedf["rna_freq_R3"] / mergedf["D05_R3_freq"]
-
-    mergedf["rna_ratio_R1"] = mergedf["rna_ratio_R1"].replace([np.inf, -np.inf], np.nan)
-    mergedf["rna_ratio_R2"] = mergedf["rna_ratio_R2"].replace([np.inf, -np.inf], np.nan)
-    mergedf["rna_ratio_R3"] = mergedf["rna_ratio_R3"].replace([np.inf, -np.inf], np.nan)
-
-    mergedf["RNA_DNA_ratio"] = mergedf[["rna_ratio_R1", "rna_ratio_R2", "rna_ratio_R3"]].median(
-        axis=1, 
-        skipna=True
-    )
-    mergedf["RNA_DNA_ratio_log2"] = np.log2(mergedf["RNA_DNA_ratio"])
-    mergedf.to_csv("/net/bbi/vol1/data/sge-analysis/work/20260219.jointscores/mergedf.tsv", 
-                   sep="\t", index=False)
-    return mergedf
-
-
-def scoreRNAVariantsRecount(args, rnacountsdf, snvcountsdf):
-    if args.verbose:
-        sys.stderr.write("INFO: scoring RNA variants\n")
-    snvcountsdf = snvcountsdf.rename(
-        columns={'allele': 'alt'}
-    )
-    mergedf = snvcountsdf.merge(rnacountsdf, on=["chrom", "pos", "alt", "target"], how="inner")
 
     # only use the DNA counts from the variants where we also have RNA for normalizing
     mergedf["D05_R1_tot"] = mergedf.groupby(['target'])["D05_R1"].transform('sum')
@@ -462,8 +439,6 @@ def scoreRNAVariantsRecount(args, rnacountsdf, snvcountsdf):
         skipna=True
     )
     mergedf["RNA_DNA_ratio_log2"] = np.log2(mergedf["RNA_DNA_ratio"])
-    mergedf.to_csv("/net/bbi/vol1/data/sge-analysis/work/20260219.jointscores/mergedfRecount.tsv", 
-                   sep="\t", index=False)
     return mergedf
 
 # use a loess smoother to smooth the non-day5 frequencies
@@ -952,10 +927,16 @@ def main():
         help="Minimum number of scored variants required before functional class assignment"
     )
     parser.add_argument(
-        '-W', '--nowarn', required=False, default=False,
+        '-W', '--nowarn', required=False, default=True,
         action="store_true",
-        help="Do not output WARN variants"
+        help="Do not output WARN variants (default behavior, retained for compatibilty)"
     )
+    parser.add_argument(
+        '-w', '--warn', required=False, default=False,
+        action="store_true",
+        help="Output WARN variants"
+    )
+
     args = parser.parse_args()
     snv_mode = True
     if args.nosnvs:
@@ -1264,7 +1245,8 @@ def main():
     )
 
     # remove WARN variants if requested
-    if args.nowarn:
+    if not args.warn:
+        sys.stderr.write("INFO: removing variants with WARN QC flag\n")
         scoredf = scoredf[scoredf["variant_qc_flag"] != "WARN"]
 
     # now check if we are scoring RNA as well
@@ -1281,7 +1263,7 @@ def main():
                 continue
             rnacountsdf = pd.concat([rnacountsdf, tdf])
         rnacountsdf = rnacountsdf.rename(columns={'allele': 'alt'})
-        rnascoredf = scoreRNAVariantsRecount(args, rnacountsdf, snvcountsdf)
+        rnascoredf = scoreRNAVariants(args, rnacountsdf, snvcountsdf)
         
         sys.stderr.write("INFO: finished scoring %d RNA variants\n" % rnascoredf.shape[0])
         sys.stderr.write("INFO: starting collapsing of duplicated RNA variants\n")
