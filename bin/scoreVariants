@@ -236,7 +236,8 @@ def getAnnots(args, vepdir, targetlist, targetfile, type="snv"):
                         ["chrom", "pos", "start", "end",
                          "allele",
                          "pos_id", "amino_acid_change",
-                         "Consequence", "hgvs_p", "hgvs_g",
+                         "Consequence", "hgvs_p",
+                         "hgvs_c", "hgvs_g",
                          "CDS_position", "cDNA_position",
                          "Protein_position"]
                     ]
@@ -266,7 +267,8 @@ def getAnnots(args, vepdir, targetlist, targetfile, type="snv"):
                         ["chrom", "pos", "start", "end",
                          "ref", "allele", 
                          "pos_id", "amino_acid_change", 
-                         "Consequence", "hgvs_p", "hgvs_g",
+                         "Consequence", "hgvs_p",
+                         "hgvs_c", "hgvs_g",
                          "CDS_position", "cDNA_position"
                          ]
                     ]   
@@ -693,7 +695,7 @@ def loadRNACounts(args, targetfile, t):
     df = pd.DataFrame()
     repls = []
     rindex = 1
-    for fn in glob.glob("%s/%s_R*.snvs.tsv" % (args.rnacountsdir, t)):
+    for fn in sorted(glob.glob("%s/%s_R*.snvs.tsv" % (args.rnacountsdir, t))):
         if args.verbose:
             sys.stderr.write("INFO: loading RNA data from %s\n" % fn)
         repl = fn.split("/")[-1].split("_")[2].split(".")[0]
@@ -1095,6 +1097,7 @@ def main():
                 "Consequence",
                 "amino_acid_change",
                 "hgvs_p",
+                "hgvs_c",
                 "hgvs_g",
                 "CDS_position", 
                 "cDNA_position",
@@ -1161,6 +1164,7 @@ def main():
                 "Consequence",
                 "amino_acid_change",
                 "hgvs_p",
+                "hgvs_c",
                 "hgvs_g",
                 "CDS_position",
                 "cDNA_position",
@@ -1236,7 +1240,8 @@ def main():
         "chrom", "pos", "ref", "alt", "exon", "all_targets",
         "consequence", "score", 
         "standard_error", "95_ci_upper", "95_ci_lower",
-        "amino_acid_change", "hgvs_p", "hgvs_g", "CDS_position", "cDNA_position", 
+        "amino_acid_change", "hgvs_p", "hgvs_c",
+        "hgvs_g", "CDS_position", "cDNA_position", 
         "functional_consequence",
         "gmm_density_abnormal", "gmm_density_normal",
         "variant_qc_flag",
