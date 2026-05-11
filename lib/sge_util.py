@@ -71,12 +71,19 @@ def calcMeanPearsonR(targetfile, targetname, countsdir):
     return mean_corrs
 
 
-#def getHGVSp(vepstring):
-#    try:
-#        return vepstring.split(";")[4].split("=")[1].replace("%3D", "=")
-#    except:
-#        return ""
-
+def getHGVSc(veprow):
+    vepstring = veprow["Extra"]
+    try:
+        cdot = ""
+        parts = vepstring.split(";")
+        for p in parts:
+            k, v = p.split("=")
+            if k == "HGVSc":
+                cdot = v.replace("%3D", "=")
+    except:
+        return ""
+    return cdot
+               
 
 def getHGVSg(veprow):
     vepstring = veprow["Extra"]
@@ -130,6 +137,7 @@ def getVEPdf(vepfile, type="snv"):
         #vepdf["hgvs_p"] = vepdf["Extra"].apply(getHGVSp)
         vepdf[["hgvs_p", "is_canonical_hgvs_p"]] = vepdf.apply(getHGVSp, axis=1, result_type='expand')
         vepdf["hgvs_g"] = vepdf.apply(getHGVSg, axis=1)
+        vepdf["hgvs_c"] = vepdf.apply(getHGVSc, axis=1)
     elif type == "del":
         vepdf = pd.read_csv(vepfile, sep="\t", skiprows=38) # was 45
         vepdf[["chrom", "coords"]] = vepdf["Location"].str.split(":", expand=True)
@@ -139,6 +147,7 @@ def getVEPdf(vepfile, type="snv"):
         #vepdf["hgvs_p"] = vepdf["Extra"].apply(getHGVSp)
         vepdf[["hgvs_p", "is_canonical_hgvs_p"]] = vepdf.apply(getHGVSp, axis=1, result_type='expand')
         vepdf["hgvs_g"] = vepdf.apply(getHGVSg, axis=1)
+        vepdf["hgvs_c"] = vepdf.apply(getHGVSc, axis=1)
     else:
         return None
     return vepdf

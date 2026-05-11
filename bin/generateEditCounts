@@ -287,7 +287,7 @@ def processInputFile(target, args,
 
     '''
     if args.maxreads < 1:
-        maxreads = np.Inf
+        maxreads = np.inf
     else:
         maxreads = args.maxreads
     

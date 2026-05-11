@@ -25,9 +25,9 @@ def main():
         infile.readline()  # skip header line
         for line in infile:
             parts = line.strip().split("\t")
-            chrom = parts[1]
-            start = parts[4]
-            stop = parts[5]
+            chrom = parts[2]
+            start = parts[5]
+            stop = parts[6]
             targetname = parts[0]
 
             regionstring = chrom + ":" + start + "-" + stop
