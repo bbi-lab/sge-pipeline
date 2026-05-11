@@ -108,7 +108,7 @@ class Target:
         samples = {}
         if countsdir.endswith("/"):
             countsdir = countsdir[:-1]
-        for fullfn in glob.glob("%s/%s_*.snvs.tsv" % (countsdir, self.targetname)):
+        for fullfn in sorted(glob.glob("%s/%s_*.snvs.tsv" % (countsdir, self.targetname))):
             fn = fullfn.split("/")[-1]
             parts = fn.split(".")[0].split("_")
             repl = parts[2]
@@ -138,7 +138,7 @@ class Target:
         samples = {}
         if countsdir.endswith("/"):
             countsdir = countsdir[:-1]
-        for fullfn in glob.glob("%s/%s_*.dels.tsv" % (countsdir, self.targetname)):
+        for fullfn in sorted(glob.glob("%s/%s_*.dels.tsv" % (countsdir, self.targetname))):
             fn = fullfn.split("/")[-1]
             parts = fn.split(".")[0].split("_")
             repl = parts[2]

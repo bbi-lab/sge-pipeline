@@ -90,14 +90,14 @@ def make_correlation_figures(target, sampledict, day, args):
     for index, repl1 in enumerate(sampledict[day]):
         fn = repl1.split("/")[-1]
         parts = fn.split(".")[0].split("_")
-        repl = parts[2]
-        if repl == 'NC': # throw out the negative control
+        repl1_short = parts[2]
+        if repl1_short == 'NC': # throw out the negative control
             continue
         for repl2 in sampledict[day][index+1:]:
             fn = repl2.split("/")[-1]
             parts = fn.split(".")[0].split("_")
-            repl = parts[2]
-            if repl == 'NC': # throw out the negative control
+            repl2_short = parts[2]
+            if repl2_short == 'NC': # throw out the negative control
                 continue
 
             s1counts = sge_counts.getSNVCounts(repl1, augment=False, pseudocount=0)
@@ -118,8 +118,16 @@ def make_correlation_figures(target, sampledict, day, args):
             # compute SNV correlation
             mycorr = tmpdf[["count_s1", "count_s2"]].corr().iloc[0,1]
             p = alt.Chart(tmpdf).mark_point().encode(
-                x=alt.X("count_s1:Q", title=wrap(repl1, width=40)).scale(type='log').axis(titleFontSize=8),#"%s"% repl1.split("/")[-1].split(".")[0]).scale(type='log'),
-                y=alt.Y("count_s2:Q", title=wrap(repl2, width=40)).scale(type='log').axis(titleFontSize=8),#"%s"% repl2.split("/")[-1].split(".")[0]).scale(type='log'),
+                x=alt.X(
+                    "count_s1:Q",
+                    #title=wrap(repl1, width=40)
+                    title=repl1_short
+                ).scale(type='log').axis(titleFontSize=12),#"%s"% repl1.split("/")[-1].split(".")[0]).scale(type='log'),
+                y=alt.Y(
+                    "count_s2:Q",
+                    #title=wrap(repl2, width=40)
+                    title=repl2_short
+                ).scale(type='log').axis(titleFontSize=12),#"%s"% repl2.split("/")[-1].split(".")[0]).scale(type='log'),
 
             )
             t = alt.Chart({'values':[{}]}).mark_text(
@@ -443,7 +451,7 @@ def build_figure(target, args):
                 for cplot in correlationplots[d][1:]:
                     layout |= cplot
                 layout = layout.properties(
-                    title='Pearson correlation. day %s' % d
+                    title='Pearson correlation, day %s' % d[1:]
                 )
                 corrlayouts.append(layout)
             else:
@@ -458,7 +466,7 @@ def build_figure(target, args):
             layout = layout.resolve_scale(
                 y='shared'
             ).properties(
-                title="Counts per variant per replicate, day %s" % d
+                title="Counts per variant per replicate, day %s" % d[1:]
             )
             countslayouts.append(layout)
 
@@ -469,7 +477,7 @@ def build_figure(target, args):
                 layout &= lplot
             layout = layout.properties(
                 title=alt.TitleParams(
-                    text='log2 ratios per variant, day %s' % d
+                    text='log2 ratios per variant, day %s' % d[1:]
                 )
             ).resolve_scale(
                 y='shared'
@@ -571,8 +579,8 @@ def main():
         sys.stderr.write("ERROR: must provide either -c <dir> or -p\n")
         sys.exit(-99)
 
-    if not args.outfile.endswith(".html") and not args.outfile.endswith(".png"):
-        sys.stderr.write("ERROR: the output file does not end with .html or .png\n")
+    if not args.outfile.endswith(".html") and not args.outfile.endswith(".png") and not args.outfile.endswith(".svg"):
+        sys.stderr.write("ERROR: the output file does not end with .html or .png or .svg\n")
         sys.exit(-99)
     
     parts = args.targetname.split("_")
