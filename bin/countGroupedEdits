@@ -1,0 +1,227 @@
+#!/usr/bin/env python
+
+import sys
+import argparse
+
+import pysam
+import numpy as np
+import pandas as pd
+
+sys.path.append("/net/bbi/vol1/data/sge-analysis/lib/")
+import sge_target
+
+edits = {}
+
+WT_READ = 1
+MISSING_REQ_EDIT = 2
+TOO_MANY_SNVS = 3
+DEL_READ_WITH_ERRORS = 4
+USEFUL_SNV_READ = 5
+USEFUL_DEL_READ = 6
+BAD_CIGAR = 7
+NO_SNV_FOUND = 8
+
+
+def process_snv_read(target, args, readobj, editdict):
+    '''process a read to extract all SNVs, check for the presence of the 
+    expected edits, and update the per-variant counts for the identified SNV
+    '''
+    # gather all differences between the amplicon and the reference
+    apairs = readobj.get_aligned_pairs(with_seq=True)
+    local_edits = {}
+        
+    for (read_offset, ref_offset, ref_base) in apairs:
+        if target.ampstartpos + ref_offset in target.skip_pos:
+            continue
+
+        if target.ampstartpos + read_offset < target.editstartpos \
+            or target.ampstartpos + read_offset > target.editendpos:
+            continue
+
+        if ref_base.islower(): # lowercase means a mismatch between ref and read
+            local_edits[target.ampstartpos + ref_offset] = readobj.query_sequence[ref_offset]
+    if args.verbose:
+        print("INFO: local edits:", local_edits)
+
+    present = []
+    for pos, base in sorted(editdict.items()):
+        if pos in local_edits and local_edits[pos] == base:
+            present.append(1) # it's there
+            del local_edits[pos]
+        else:
+            present.append(0) # it's not there
+    if not 0 in present:
+        print("%d edits remaining" % len(local_edits))
+    present = tuple(present)
+
+    if present in edits:
+        edits[present] += 1
+    else:
+        edits[present] = 1
+
+    return USEFUL_SNV_READ
+
+
+def processInputFile(
+        target, 
+        args,
+        editdict
+):
+    if args.maxreads < 1:
+        maxreads = np.inf
+    else:
+        maxreads = args.maxreads
+    
+    # dict to hold statistics to output later
+    readstats = {'total_reads': 0,
+                 'bad_cigar': 0,
+                 'wild_type': 0,
+                 'missing_req_edit': 0,
+                 'too_many_snvs': 0,
+                 'del_plus_errors': 0,
+                 'no_snv_edit': 0,
+                 'snv_reads': 0,
+                 'deletion_reads': 0,
+    }
+    
+    with pysam.AlignmentFile(args.inputbam) as infile:
+        for record in infile:
+            if readstats['total_reads'] >= maxreads:
+                break
+            readstats['total_reads'] += 1
+
+            result = BAD_CIGAR
+            cigarstats = record.get_cigar_stats()
+
+            if record.cigarstring == target.cigar:
+                result = process_snv_read(target, args, record, editdict)
+            else:
+                continue
+
+    return readstats
+
+
+def writeOutput(target, args, editdict):
+    # we are starting with something like
+    # [1, 0, 0, 1] and we want to convert that to 
+    # postitions and yes/no
+    positions = sorted(editdict.keys())
+    poslists = []
+    posvals = []
+    counts = []
+    sampleids = []
+    targets = []
+
+    for i in range(len(positions)):
+        poslists.append([])
+        posvals.append([])
+
+    for k, v in edits.items():
+        for index, code in enumerate(k):
+            if code == 1:
+                poslists[index].append(positions[index])
+                posvals[index].append('Y')
+            else:
+                poslists[index].append(positions[index])
+                posvals[index].append('N')
+
+                #poslists[index].append('N')
+        counts.append(v)
+        targets.append(target.targetname)
+        sampleids.append(args.sampleid)
+    dfdict = {}
+    dfdict["sampleid"] = sampleids
+    dfdict["target"] = targets
+    for i in range(len(positions)):
+        dfdict['pos_%d' % i] = poslists[i]
+        dfdict['value_%d' % i] = posvals[i]
+    dfdict['count'] = counts
+
+    df = pd.DataFrame(dfdict)
+    df.to_csv(args.output, sep="\t", index=False)
+    return
+
+
+
+def writeStatsFile(target, args, readstats):
+    with open(args.statsfile, 'w') as sfh:
+        sfh.write("sampleid\ttargetname\ttotal_reads\tbad_cigar\twild_type\tmissing_req_edit\t" +
+                  "too_many_snvs\tdel_plus_errors\tno_snv_edit\tsnv_reads\tdeletion_reads\n")
+        sfh.write(args.sampleid + "\t" +
+                  target.targetname + "\t" +
+                  str(readstats["total_reads"]) + "\t" + 
+                  str(readstats["bad_cigar"]) + "\t" +
+                  str(readstats["wild_type"]) + "\t" +
+                  str(readstats["missing_req_edit"]) + "\t" +
+                  str(readstats["too_many_snvs"]) + "\t" +
+                  str(readstats["del_plus_errors"]) + "\t" +
+                  str(readstats["no_snv_edit"]) + "\t" +
+                  str(readstats["snv_reads"]) + "\t" +
+                  str(readstats["deletion_reads"]) + "\n"
+        )
+
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='generateEditCounts',
+        description='extract matrix of edits for an SGE sample'
+    )
+    parser.add_argument('-e', '--editlist', required=True,
+                        help="comma-separated list of edits to count")
+    parser.add_argument('-n', '--targetname', required=True,
+                        help="Target name -- must match entry in <targetfile>")
+    parser.add_argument('-t', '--targetfile', required=True, 
+                        help="File containing list of targets and expected edits")
+    parser.add_argument('-o', '--output', required=True, 
+                        help="Output filename")
+    parser.add_argument('-l', '--sampleid', required=True, default="unlabeled",
+                        help="Sample identifer (replicate, timepoint)")
+    parser.add_argument('-S', '--statsfile', default='', required=True,
+                        help='Path to summary stats output file to append to')
+    parser.add_argument('-v', '--verbose', required=False, default=False,
+                        action="store_true", help="Verbose output")
+    parser.add_argument('-m', '--maxreads', type=int, default=0, 
+                        help='Maximum number of reads to processs')
+    parser.add_argument('inputbam',
+                        help="Path to input BAM file")
+    args = parser.parse_args()
+    
+    # create Target instance for the specific target name we provided
+    target = sge_target.Target(args.targetname, args.targetfile)
+
+    editdict = {}
+    if args.editlist:
+        # user specified required edits
+        try:
+            tedits = args.editlist.split(",")
+            for edit in tedits:
+                pos = int(edit[:-1])
+                base = edit[-1]
+                editdict[pos] = base
+
+        except:
+            sys.stderr.write("ERROR: Unable to parse edit list: %s\n" % args.editlist)
+            sys.stderr.write("Please specify edits as comma-separated list, e.g. 1234A,2345T,...\n")
+            sys.exit(-99)
+    else:
+        editdict = target.required_edits
+    
+    if args.verbose:
+        print("INFO: creating empty counts matrix with %d positions" % (
+            target.editendpos - target.editstartpos + 1))
+    
+    readstats = processInputFile(target, args, editdict)
+    writeOutput(target, args, editdict)
+
+    if args.statsfile:
+        writeStatsFile(target, args, readstats)
+
+    return
+
+
+if __name__ == '__main__':
+    main()
+    
+
